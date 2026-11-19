@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07060f">
+<title>DJ Mili</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css?v=1">
+</head>
+<body>
+<div id="lock" class="overlay hidden">
+  <div class="lockbox">
+    <div class="logo big">DJ <b>MILI</b></div>
+    <p>Ingresa tu PIN</p>
+    <input id="pinIn" type="password" inputmode="numeric" maxlength="8" autocomplete="off">
+    <button id="pinGo" class="btn neon">Entrar</button>
+    <p id="pinMsg" class="muted small"></p>
+    <p class="muted tiny">Candado local de este teléfono. No es una cuenta ni protege contra alguien con acceso al navegador.</p>
+  </div>
+</div>
+<div id="start" class="overlay">
+  <div class="lockbox">
+    <div class="logo big">DJ <b>MILI</b></div>
+    <p class="muted">Consola DJ en tu navegador</p>
+    <button id="startBtn" class="btn neon big">▶ Empezar</button>
+    <p id="startMsg" class="muted small"></p>
+  </div>
+</div>
+<div id="party" class="overlay hidden"><canvas id="partyCv"></canvas><div id="partyInfo"></div><button id="partyX" class="btn ghost">✕ Salir</button></div>
+
+<header id="top">
+  <div class="logo">DJ <b>MILI</b></div>
+  <div id="meter"><i></i></div>
+  <div id="recBadge" class="hidden">● <span>0:00</span></div>
+  <button id="partyBtn" class="icon" title="Modo fiesta">🎉</button>
+</header>
+
+<main>
+<section id="t-mix" class="tab active">
+  <div id="deck0" class="deck"></div>
+  <div class="card mixer">
+    <div class="row between">
+      <label class="chk"><input type="checkbox" id="automix" data-midi="automix"> Auto‑mix</label>
+      <select id="mixBeats"><option value="8">8 beats</option><option value="16" selected>16 beats</option><option value="32">32 beats</option></select>
+      <span id="harm" class="badge">—</span>
+    </div>
+    <div class="xfrow"><b class="a">A</b><input type="range" id="xf" min="0" max="1" step="0.001" value="0.5" data-midi="xf"><b class="b">B</b></div>
+    <div id="mixMsg" class="muted tiny center"></div>
+  </div>
+  <div id="deck1" class="deck"></div>
+</section>
+
+<section id="t-pads" class="tab">
+  <div class="card">
+    <div class="row between"><h3>Pads</h3><span class="muted tiny">Toca = disparar · ⚙ = ajustes del pad</span></div>
+    <div id="pads" class="pads"></div>
+    <label>Volumen de pads<input type="range" id="padVol" min="0" max="1.5" step="0.01" value="0.9" data-midi="padvol"></label>
+  </div>
+  <div id="padEdit" class="card hidden"></div>
+</section>
+
+<section id="t-lib" class="tab">
+  <div class="chips" id="libChips">
+    <button data-sub="local" class="chip on">Mis canciones</button>
+    <button data-sub="yt" class="chip">YouTube</button>
+    <button data-sub="lists" class="chip">Listas</button>
+    <button data-sub="queue" class="chip">Cola <span id="qCount"></span></button>
+  </div>
+  <div class="sub" id="s-local">
+    <div class="card">
+      <div class="row wrap">
+        <label class="btn neon">＋ Canciones<input type="file" id="fileIn" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg" multiple hidden></label>
+        <label class="btn">📁 Carpeta<input type="file" id="dirIn" webkitdirectory multiple hidden></label>
+        <button class="btn" id="fsBtn" hidden>📂 Abrir carpeta (acceso)</button>
+      </div>
+      <input id="q" class="search" placeholder="Buscar título, artista, BPM, tono…">
+      <div class="row between"><label class="chk"><input type="checkbox" id="harmOnly"> Solo compatibles con lo que suena</label><span id="anaMsg" class="muted tiny"></span></div>
+    </div>
+    <div id="libList" class="list"></div>
+  </div>
+  <div class="sub hidden" id="s-yt">
+    <div class="card">
+      <div id="ytPlayer" class="ytwrap hidden"></div>
+      <div class="row"><input id="ytQ" class="search" placeholder="Buscar en YouTube o pega un link"><button class="btn neon" id="ytGo">Buscar</button></div>
+      <p class="muted tiny">YouTube suena en su propio reproductor: no pasa por el EQ, FX ni la grabación (lo bloquea YouTube). Spotify no permite reproducir fuera de su app; solo hay botón para abrirlo allá.</p>
+      <div id="ytMsg" class="muted small"></div>
+    </div>
+    <div id="ytList" class="list"></div>
+  </div>
+  <div class="sub hidden" id="s-lists">
+    <div class="card"><div class="row"><input id="plName" class="search" placeholder="Nombre de la lista"><button class="btn neon" id="plNew">Crear</button></div></div>
+    <div id="plList" class="list"></div>
+  </div>
+  <div class="sub hidden" id="s-queue">
+    <div class="card row between"><span class="muted small">El Auto‑mix toma de aquí. Si se vacía, elige una compatible.</span><button class="btn" id="qClear">Vaciar</button></div>
+    <div id="qList" class="list"></div>
+  </div>
+</section>
+
+<section id="t-eq" class="tab">
+  <div class="card">
+    <div class="row between"><h3>EQ maestro · 10 bandas</h3><label class="chk"><input type="checkbox" id="eqByp"> Bypass</label></div>
+    <canvas id="eqCv" height="120"></canvas>
+    <div id="eqBands" class="eqbands"></div>
+    <div id="eqEdit" class="eqedit"></div>
+    <div class="row wrap">
+      <select id="eqPreset"></select>
+      <button class="btn" id="eqSave">Guardar preset</button>
+      <button class="btn" id="eqDel">Borrar</button>
+      <button class="btn" id="eqFlat">Plano</button>
+    </div>
+  </div>
+</section>
+
+<section id="t-rec" class="tab">
+  <div class="card">
+    <h3>Grabar set</h3>
+    <label>Título<input id="recTitle" placeholder="Set en vivo"></label>
+    <label>Etiquetas<input id="recTags" placeholder="cumbia, fiesta, en vivo"></label>
+    <label>Formato<select id="recFmt"><option value="wav">WAV (sin pérdida)</option><option value="flac">FLAC (sin pérdida, más ligero)</option><option value="both">WAV + FLAC</option></select></label>
+    <button id="recBtn" class="btn rec big" data-midi="rec">● Grabar</button>
+    <div id="recInfo" class="muted small center"></div>
+    <p class="muted tiny">Graba la salida maestra tal cual (decks, pads, FX y micro) a la calidad de tu teléfono. Metadatos: título, usuario, fecha y etiquetas. Aguanta bien ~60 min por la memoria del cel.</p>
+  </div>
+  <div id="recList" class="list"></div>
+</section>
+
+<section id="t-more" class="tab">
+  <details class="card" open><summary>🎤 Micrófono</summary>
+    <div class="row between"><button class="btn neon" id="micBtn" data-midi="mic">Prender micro</button><label class="chk"><input type="checkbox" id="duck" checked> Bajar música al hablar</label></div>
+    <label>Volumen<input type="range" id="micGain" min="0" max="2" step="0.01" value="1"></label>
+    <label>Eco<input type="range" id="micEcho" min="0" max="0.9" step="0.01" value="0.25"></label>
+    <label>Tiempo de eco<input type="range" id="micEchoT" min="0.05" max="0.8" step="0.01" value="0.28"></label>
+    <p class="muted tiny">Usa audífonos o bocina lejos del micro para evitar acople (chillido).</p>
+  </details>
+  <details class="card"><summary>🎛️ MIDI / OTG</summary>
+    <div class="row wrap"><button class="btn neon" id="midiBtn">Activar MIDI</button><button class="btn" id="learnBtn">Aprender control</button><button class="btn" id="midiClear">Borrar mapeo</button></div>
+    <div id="midiDev" class="muted small">Sin controlador</div>
+    <div id="midiMon" class="mono small">—</div>
+    <div id="midiMap" class="mono tiny"></div>
+    <p class="muted tiny">Conecta tu controlador por USB‑OTG y usa Chrome. Pads: notas 36‑43 se mapean solas. Para lo demás: "Aprender control", toca el botón o slider de la app y mueve la perilla del controlador.</p>
+  </details>
+  <details class="card"><summary>📋 Bitácora de auditoría</summary>
+    <div class="row wrap"><button class="btn" id="logCsv">Exportar CSV</button><button class="btn" id="logJson">Exportar JSON</button><button class="btn" id="logClr">Borrar</button></div>
+    <div id="logTbl" class="logtbl"></div>
+  </details>
+  <details class="card"><summary>🔒 Usuario y PIN</summary>
+    <label>Usuario<input id="userName" value="Alfredo"></label>
+    <label>PIN (4‑8 dígitos)<input id="pinNew" type="password" inputmode="numeric" maxlength="8"></label>
+    <div class="row wrap"><button class="btn neon" id="pinSet">Poner PIN</button><button class="btn" id="pinOff">Quitar PIN</button><button class="btn" id="lockNow">Bloquear ya</button></div>
+    <p class="muted tiny">Segundo paso local: pide PIN al abrir y registra cada intento en la bitácora. Vive solo en este teléfono, no es 2FA de servidor.</p>
+  </details>
+  <details class="card"><summary>🛡️ Permisos y licencias</summary>
+    <div id="perms" class="perms"></div>
+    <p class="muted tiny">Sonidos de pads integrados y pistas demo: generados por la app (autoría propia, CC0). Al cargar un WAV/FLAC propio en un pad se revisan sus metadatos buscando CC0; si no aparece, se marca "licencia sin verificar".</p>
+  </details>
+  <details class="card"><summary>⚙️ Ajustes</summary>
+    <label>Llave YouTube Data API (opcional, gratis)<input id="ytKey" type="password" placeholder="Solo si el buscador gratis falla"></label>
+    <label>Curva del crossfader<select id="xfCurve"><option value="smooth">Suave (mezcla)</option><option value="cut">Corte (scratch)</option></select></label>
+    <label class="chk"><input type="checkbox" id="limiter" checked> Limitador de seguridad (evita saturar)</label>
+    <label class="chk"><input type="checkbox" id="saveCopies" checked> Guardar copia de canciones en la app (funciona sin internet)</label>
+    <div class="row wrap"><button class="btn" id="cacheClr">Limpiar caché de búsqueda</button><button class="btn" id="demoBtn">Recrear pistas demo</button></div>
+    <p id="ver" class="muted tiny"></p>
+  </details>
+</section>
+</main>
+
+<div id="toast"></div>
+<nav id="nav">
+  <button data-tab="mix" class="on">🎚️<span>Mezcla</span></button>
+  <button data-tab="pads">🥁<span>Pads</span></button>
+  <button data-tab="lib">🎵<span>Música</span></button>
+  <button data-tab="eq">📊<span>EQ</span></button>
+  <button data-tab="rec">⏺️<span>Grabar</span></button>
+  <button data-tab="more">☰<span>Más</span></button>
+</nav>
+<script type="module" src="js/app.js?v=1"></script>
+</body>
+</html>
