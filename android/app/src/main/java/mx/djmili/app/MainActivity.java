@@ -195,7 +195,10 @@ public class MainActivity extends Activity {
         });
 
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
-        else web.loadUrl(START);
+        else {
+            String dbg = ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent() != null) ? getIntent().getStringExtra("url") : null;
+            web.loadUrl(dbg != null ? dbg : START);
+        }
         immersive();
     }
 
