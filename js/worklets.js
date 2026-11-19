@@ -171,10 +171,3 @@ class LimiterProc extends AudioWorkletProcessor {
   }
 }
 registerProcessor('djm-limiter', LimiterProc);
-
-class RecProc extends AudioWorkletProcessor {
-  constructor() { super(); this.on = true; this.n = 0; this.l = new Float32Array(4096); this.r = new Float32Array(4096); this.port.onmessage = e => { if (e.data === 'stop') { this.flush(); this.on = false; } }; }
-  flush() { if (this.n) { this.port.postMessage([this.l.slice(0, this.n), this.r.slice(0, this.n)]); this.n = 0; } }
-  process(ins) { const i = ins[0]; if (!this.on) return false; if (i && i.length) { const a = i[0], b = i[1] || i[0]; for (let k = 0; k < a.length; k++) { this.l[this.n] = a[k]; this.r[this.n] = b[k]; this.n++; if (this.n === 4096) { this.port.postMessage([this.l, this.r]); this.l = new Float32Array(4096); this.r = new Float32Array(4096); this.n = 0; } } } return true; }
-}
-registerProcessor('djm-rec', RecProc);

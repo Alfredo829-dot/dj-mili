@@ -5,7 +5,7 @@ const URL = process.argv[2] || 'http://localhost:8765/'; const SH = '/workspace/
   const b = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', userDataDir: ud, args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--enable-precise-memory-info'] });
   let p = await b.newPage(); const errs = []; const hook = pg => { pg.on('pageerror', e => errs.push(e.message)); pg.on('console', m => m.type() === 'error' && errs.push(m.text())); pg.on('dialog', d => d.accept()); }; hook(p);
   await p.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-  await p.goto(URL, { waitUntil: 'networkidle0' }); await p.click('#startBtn'); await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 });
+  await p.goto(URL, { waitUntil: 'networkidle0' }); await p.click('#startBtn'); await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 }); await p.evaluate(require('./cap.js'));
   await p.waitForFunction(() => window.__djm.api.tracks().length >= 2 && window.__djm.api.tracks().every(t => t.analyzed), { timeout: 90000 });
   const R = {}; const files = fs.readdirSync('/tmp/batch').map(f => '/tmp/batch/' + f); R.files = files.length;
   const t0 = Date.now(); const fi = await p.$('#fileIn'); await fi.uploadFile(...files);
@@ -21,15 +21,15 @@ const URL = process.argv[2] || 'http://localhost:8765/'; const SH = '/workspace/
   await p.screenshot({ path: SH + '16-biblioteca-50.png' });
   // recargar → persistencia
   const auditBefore = await p.evaluate(async () => (await (await import('./js/store.js')).auditAll()).filter(a => a.accion === 'analizar').length);
-  await p.reload({ waitUntil: 'networkidle0' }); await p.click('#startBtn'); await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 }); await sleep(3000);
+  await p.reload({ waitUntil: 'networkidle0' }); await p.click('#startBtn'); await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 }); await p.evaluate(require('./cap.js')); await sleep(3000);
   R.after = await snap();
   R.reanalyzedAfterReload = (await p.evaluate(async () => (await (await import('./js/store.js')).auditAll()).filter(a => a.accion === 'analizar').length)) - auditBefore;
   // video mp4 en deck A pasando por EQ y grabadora
   console.log(JSON.stringify(R)); const vid = await p.evaluate(() => (window.__djm.api.tracks().find(t => /Video fiesta/.test(t.title)) || {}).id);
-  await p.evaluate(async id => { await window.__djm.api.loadToDeck(0, id); document.querySelector('#xf').value = 0; document.querySelector('#xf').dispatchEvent(new Event('input')); document.querySelector('#recFmt').value = 'wav'; }, vid);
-  await p.evaluate(() => window.__djm.api.toggleRec()); await p.evaluate(() => window.__djm.eng.decks[0].play()); await sleep(4000);
+  await p.evaluate(async id => { await window.__djm.api.loadToDeck(0, id); document.querySelector('#xf').value = 0; document.querySelector('#xf').dispatchEvent(new Event('input')); }, vid);
+  await p.evaluate(() => window.__cap.toggle()); await p.evaluate(() => window.__djm.eng.decks[0].play()); await sleep(4000);
   await p.evaluate(() => window.__djm.eng.decks[0].setEQ3('low', -26)); await sleep(3000);
-  await p.evaluate(() => { window.__djm.lastRec = null; window.__djm.eng.decks[0].pause(); return window.__djm.api.toggleRec(); }); await p.waitForFunction(() => window.__djm.lastRec);
+  await p.evaluate(() => { window.__djm.lastRec = null; window.__djm.eng.decks[0].pause(); return window.__cap.toggle(); }); await p.waitForFunction(() => window.__djm.lastRec);
   const wav = await p.evaluate(async () => { const u = new Uint8Array(await window.__djm.lastRec[0][1].arrayBuffer()); let s = ''; for (let k = 0; k < u.length; k += 32768) s += String.fromCharCode.apply(null, u.subarray(k, k + 32768)); return btoa(s); });
   fs.writeFileSync('rec_video_mp4.wav', Buffer.from(wav, 'base64'));
   // guardar solo audio (mp4 → AAC/ADTS) y decodificar

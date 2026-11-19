@@ -10,7 +10,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await p.goto(URL, { waitUntil: 'networkidle0' });
   await p.screenshot({ path: SH + '00-inicio.png' });
   await p.click('#startBtn');
-  await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 });
+  await p.waitForFunction(() => window.__djm.ready, { timeout: 60000 }); await p.evaluate(require('./cap.js'));
   await p.waitForFunction(() => window.__djm.api.tracks().length >= 2 && window.__djm.api.tracks().every(t => t.analyzed), { timeout: 90000 });
   const R = {};
   R.tracks = await p.evaluate(() => window.__djm.api.tracks().map(t => ({ t: t.title, bpm: t.bpm, key: t.key, cam: t.camelot, conf: t.bpmConf })));
@@ -57,16 +57,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // EQ tab
   await p.evaluate(() => { window.__djm.api.applyPreset('b:Cumbia'); window.__djm.api.showTab('eq'); });
   await sleep(300); await p.screenshot({ path: SH + '05-eq.png', fullPage: true });
-  // Recording
-  await p.evaluate(() => { window.__djm.api.showTab('rec'); document.querySelector('#recName').value = 'Prueba Set'; document.querySelector('#recName').dispatchEvent(new Event('input')); document.querySelector('#recTags').value = 'prueba, cumbia'; document.querySelector('#recFmt').value = 'all'; });
-  await p.click('#recBtn');
-  await p.evaluate(() => { window.__djm.eng.decks[0].play(); window.__djm.api.firePad(0); });
-  await sleep(3000); await p.screenshot({ path: SH + '06-grabando.png' });
-  await p.click('#recBtn');
-  await p.waitForFunction(() => window.__djm.lastRec, { timeout: 30000 });
-  const files = await p.evaluate(async () => { const o = {}; for (const [ext, blob] of window.__djm.lastRec) { const b = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < b.length; i += 32768) s += String.fromCharCode.apply(null, b.subarray(i, i + 32768)); o[ext] = btoa(s); } return o; });
-  for (const ext in files) fs.writeFileSync(SH + 'prueba-grabacion.' + ext, Buffer.from(files[ext], 'base64'));
-  await sleep(300); await p.screenshot({ path: SH + '07-grabacion-lista.png' });
+  // Grabador eliminado
+  R.noRecorder = await p.evaluate(() => !document.querySelector('#recBtn') && !document.querySelector('#recCard') && !window.__djm.api.toggleRec && !('recStart' in window.__djm.eng));
+  // Buscar arriba del deck B y cargar
+  await p.evaluate(() => { const q = document.querySelector('#deck1 .dq'); q.focus(); q.value = 'neón'; q.dispatchEvent(new Event('input')); }); await sleep(300);
+  R.deckSearch = await p.evaluate(() => ({ results: document.querySelectorAll('#deck1 .dres .dr').length, visible: !document.querySelector('#deck1 .dres').classList.contains('hidden') }));
+  await p.screenshot({ path: SH + '30-busqueda-deck.png' });
+  await p.evaluate(() => document.querySelector('#deck1 .dres .dr').click()); await sleep(1500);
+  R.deckSearchLoaded = await p.evaluate(() => window.__djm.eng.decks[1].track?.title);
   // Automix
   await p.evaluate(() => { const [a, b] = window.__djm.eng.decks; a.pause(); b.stop(); document.querySelector('#xf').value = 0; document.querySelector('#xf').dispatchEvent(new Event('input')); window.__djm.api.showTab('mix'); a.seek(a.duration - 9); a.play(); document.querySelector('#mixBeats').value = '8'; const c = document.querySelector('#automix'); c.checked = true; c.dispatchEvent(new Event('change')); });
   await sleep(4500);

@@ -1,0 +1,10 @@
+const puppeteer = require('puppeteer-core'); const fs=require('fs'),os=require('os'),path=require('path'); const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => { const b = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', userDataDir: fs.mkdtempSync(path.join(os.tmpdir(),'plv-')), args: ['--no-sandbox','--autoplay-policy=no-user-gesture-required'] }); const p = await b.newPage(); const errs=[]; p.on('pageerror', e => errs.push(e.message));
+await p.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+await p.goto('http://localhost:8765/', { waitUntil: 'networkidle0' }); await p.click('#startBtn'); await p.waitForFunction(() => window.__djm.ready, { timeout: 90000 });
+await p.click('#plBtn'); await sleep(300); const inp = await p.$('#plFile'); await inp.uploadFile('/tmp/djtest/grito.mp4', '/tmp/djtest/fuerte.m4a');
+await p.waitForFunction(() => window.__djm.player.list.length >= 2, { timeout: 60000 }); await p.evaluate(() => window.__djm.player.play(window.__djm.player.list.findIndex(()=>true))); await sleep(2500);
+const r = await p.evaluate(() => { const v = document.querySelector('#pv'); return { videoW: v.videoWidth, videoH: v.videoHeight, t: v.currentTime.toFixed(2), paused: v.paused, title: document.querySelector('#plT').textContent, sr: window.__djm.player.ctx && window.__djm.player.ctx.sampleRate }; });
+await p.screenshot({ path: '/workspace/dj-mili/shots/33-reproductor-video-vertical.png' });
+await p.evaluate(() => window.__djm.player.next()); await sleep(1500); r.next = await p.evaluate(() => ({ title: document.querySelector('#plT').textContent, t: document.querySelector('#pv').currentTime.toFixed(2) }));
+r.errs = errs; console.log(JSON.stringify(r)); await b.close(); })().catch(e => { console.error('FAIL', e); process.exit(1); });

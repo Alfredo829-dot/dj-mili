@@ -1,5 +1,6 @@
 import { Engine, EQ_DEFAULT } from './engine.js';
-import { Sampler, NPADS } from './sampler.js';
+import { Sampler, BUILTIN, PAD_COLORS } from './sampler.js';
+const BUILTIN_IDS = BUILTIN.map(b => b.id);
 import { detectBPM } from './bpm.js';
 import { detectKey, camelotCompatible, camelotNeighbors } from './key.js';
 import { encodeWAV, encodeFLAC, readTags, floatTo16 } from './encoders.js';
@@ -8,6 +9,7 @@ import { idb, settings, audit, auditAll, onAudit, cachePurge, auditTrim } from '
 import { Midi } from './midi.js';
 import { searchYouTube, parseYouTubeId } from './search.js';
 import { makeDemo } from './demo.js';
+import { Player } from './player.js';
 import { integratedLoudness, normGainDb, TARGET_LUFS } from './loudness.js';
 
 const VERSION = '1.2.0';
@@ -46,7 +48,7 @@ async function boot() {
 async function start() {
   $('#startMsg').textContent = 'Preparando audio…'; if (installed() && settings.get('lockLand', true)) lockLandscape();
   try {
-    eng = new Engine(); await eng.init(); await eng.resume();
+    eng = new Engine({ hd: settings.get('hd', true) }); await eng.init(); await eng.resume();
     window.__djm.eng = eng;
     sampler = new Sampler(eng); window.__djm.sampler = sampler;
     buildDecks(); buildPads(); buildEQ(); bindUI();
@@ -59,7 +61,7 @@ async function start() {
     analyzePending();
     audit('abrir app', 'ok', 'v' + VERSION + ' ' + eng.ctx.sampleRate + ' Hz');
     requestAnimationFrame(loop); setInterval(automixTick, 150);
-    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+    if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.DJMiliAndroid) navigator.serviceWorker.register('sw.js').catch(() => {});
     navigator.storage?.persist?.();
     window.__djm.ready = true;
   } catch (e) { console.error(e); $('#startMsg').textContent = 'Error: ' + e.message; }
@@ -95,7 +97,7 @@ async function audioOnlyBlob(f) {
   return { blob: encodeFLAC([L, R], buf.sampleRate, { title: f.name }), how: 'FLAC' };
 }
 async function importFiles(files) {
-  const save = $('#saveCopies').checked, audioOnly = $('#audioOnly').checked; let n = 0, skip = 0;
+  const save = $('#saveCopies').checked, audioOnly = $('#audioOnly').checked; let n = 0, skip = 0; const added = [];
   const list = files.filter(f => AUD_RE.test(f.name) || VID_RE.test(f.name) || /^(audio|video)\//.test(f.type));
   skip = files.length - list.length;
   if (save && list.length) await askPersist();
@@ -109,12 +111,12 @@ async function importFiles(files) {
     let blob = f;
     if (video && audioOnly) { try { const r = await audioOnlyBlob(f); blob = r.blob; tr.extracted = r.how; tr.size = blob.size; tr.origSize = f.size; } catch (e) { audit('extraer audio', 'error', f.name + ': ' + e.message); } }
     if (save) { try { await idb.put('blobs', blob, id); tr.stored = true; } catch (e) { session.set(id, blob); toast('Sin espacio para copia: queda solo en esta sesión'); } } else session.set(id, blob);
-    await idb.put('tracks', tr); tracks.push(tr); n++;
+    await idb.put('tracks', tr); tracks.push(tr); added.push(tr); n++;
     audit('importar ' + (video ? 'video' : 'archivo'), 'ok', f.name + (tr.extracted ? ' · solo audio (' + tr.extracted + ')' : ''));
     if (n % 10 === 0) renderLib();
   }
   $('#impMsg').textContent = n ? `${n} agregada(s)${skip ? ` · ${skip} ignorado(s) (no es audio/video)` : ''}` : 'No se agregó nada';
-  toast(n + ' canción(es) agregada(s)'); renderLib(); renderStorage(); analyzePending();
+  toast(n + ' canción(es) agregada(s)'); renderLib(); renderStorage(); analyzePending(); return added;
 }
 async function renderStorage() {
   try {
@@ -253,10 +255,12 @@ function renderPlaylists() {
 
 // ---------------- Decks UI ----------------
 const deckUI = [];
+const ACCEPT = 'audio/*,video/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.mp4,.webm,.mov,.m4v,.mkv';
 function buildDecks() {
   for (let i = 0; i < 2; i++) {
     const root = $('#deck' + i), d = eng.decks[i], L = 'AB'[i], p = 'd' + i;
     root.innerHTML = `
+      <div class="dsearch"><input class="dq" type="search" placeholder="Buscar canción para ${L}…" enterkeyhint="search" autocomplete="off" data-midi="${p}-search"><label class="btn dcel" title="Elegir canciones o videos del teléfono">📱 Del cel<input type="file" class="dfile" accept="${ACCEPT}" multiple hidden></label><div class="dres hidden"></div></div>
       <div class="hd"><span class="letter">${L}</span><span class="title">Sin canción · elige abajo en Música</span><span class="badge bpm">— BPM</span><span class="badge key">—</span></div>
       <canvas class="zoom"></canvas><canvas class="ovw"></canvas>
       <div class="info"><span><b class="el">0:00</b> / <span class="rm">-0:00</span></span><span class="loopinfo"></span><span class="ng"></span><span class="rt">0.0%</span></div>
@@ -385,6 +389,26 @@ function buildDecks() {
       for (let k = 0; k < N; k++) { const y = H - (k + 1) * sh; const col = k >= N - 2 ? '#ff3b5c' : k >= N - 5 ? '#ffd23f' : '#39ff88'; g.fillStyle = k < on || k === hold && ui.vuHold > 0.01 ? col : 'rgba(255,255,255,.07)'; g.fillRect(0, y + 1, W, sh - 2); }
     };
     root.querySelectorAll('.kn input').forEach(knobify);
+    // Buscar y cargar justo arriba del deck
+    const dq = q('.dq'), dres = q('.dres');
+    ui.showRes = () => {
+      const qs = dq.value.trim().toLowerCase(), other = eng.decks[1 - i].track; const cam = other?.camelot;
+      let list = tracks.filter(t => !qs || [t.title, t.artist, t.album, t.genre, t.camelot, t.key, String(Math.round(t.bpm || 0)), t.name].join(' ').toLowerCase().includes(qs));
+      const score = t => { const c = cam && t.camelot ? camelotCompatible(cam, t.camelot) : ''; return (c === 'perfecta' || c.startsWith?.('compatible') ? 0 : c === 'energía (+2)' ? 1 : 2) + (recentPlayed.includes(t.id) ? 3 : 0); };
+      if (!qs && cam) list.sort((a, b) => score(a) - score(b));
+      list = list.slice(0, 30); dres.innerHTML = '';
+      if (!list.length) dres.innerHTML = `<p class="muted small center">${tracks.length ? 'Sin resultados' : 'Aún no hay canciones: toca 📱 Del cel'}</p>`;
+      for (const t of list) {
+        const c = cam && t.camelot ? camelotCompatible(cam, t.camelot) : null; const col = c === 'perfecta' || (c && c.startsWith('compatible')) ? 'var(--g)' : c === 'energía (+2)' ? 'var(--y)' : c ? 'var(--r)' : 'var(--line)';
+        const r = el('button', { class: 'dr' }, `<b>${t.video ? '<span class="vid">VIDEO</span>' : ''}${esc(t.title)}</b><small><span class="dot" style="background:${col}"></span>${esc(t.artist || '')}${t.bpm ? ' · ' + t.bpm.toFixed(0) + ' BPM' : ''}${t.camelot ? ' · ' + t.camelot : ''}${t.dur ? ' · ' + fmt(t.dur) : ''}</small>`);
+        r.onpointerdown = e => e.preventDefault(); r.onclick = () => { dres.classList.add('hidden'); dq.value = ''; dq.blur(); loadToDeck(i, t); };
+        dres.append(r);
+      }
+      dres.classList.remove('hidden');
+    };
+    dq.oninput = ui.showRes; dq.onfocus = ui.showRes; dq.onblur = () => setTimeout(() => dres.classList.add('hidden'), 150);
+    dq.onkeydown = e => { if (e.key === 'Enter') { const f = dres.querySelector('.dr'); if (f) f.click(); } if (e.key === 'Escape') dq.blur(); };
+    q('.dfile').onchange = async e => { const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return; const added = await importFiles(fs); if (added && added.length) { await loadToDeck(i, added[0]); if (added.length > 1) toast(`${added[0].title} en ${L} · ${added.length - 1} más en la biblioteca`); } };
     d.onEnd = () => { ui.render(); audit('fin de pista deck ' + L, 'ok', d.track?.title); };
     deckUI.push(ui); ui.render();
   }
@@ -468,46 +492,69 @@ async function automixTick() {
   step();
 }
 
-// ---------------- Pads ----------------
-const PC = ['#ff2bd6', '#ffd23f', '#ff9f1c', '#ff3b5c', '#3d7bff', '#00e5ff', '#b04dff', '#39ff88', '#ff6b00', '#e0e0ff', '#ff2b5c', '#00ffd0', '#ffe600', '#ff4040', '#7a5cff', '#00b3ff'];
+// ---------------- Pads (personalizables, bancos de 8) ----------------
+const BANKN = ['A · público', 'B · efectos DJ'];
 function buildPads() {
   const box = $('#pads'); box.innerHTML = '';
-  for (let i = 0; i < NPADS; i++) {
-    if (i % 8 === 0) box.append(el('div', { class: 'bank' }, i ? 'Banco B · efectos DJ' : 'Banco A · público'));
-    const p = el('div', { class: 'pad', style: `--pc:${PC[i]}`, 'data-midi': 'pad' + i, 'data-i': i }, `<b class="em">⏳</b><span>…</span><i class="gear">⚙</i><i class="lic"></i>`);
+  sampler.pads.forEach((pd, i) => {
+    if (i % 8 === 0) box.append(el('div', { class: 'bank' }, 'Banco ' + (BANKN[i / 8] || String.fromCharCode(65 + i / 8) + ' · propios')));
+    const p = el('div', { class: 'pad', style: `--pc:${pd.color || PAD_COLORS[i % 16]}`, 'data-midi': 'pad' + i, 'data-i': i }, `<b class="em">⏳</b><span>…</span><i class="gear">⚙</i><i class="lic"></i>`);
     p.addEventListener('pointerdown', e => { if (e.target.classList.contains('gear')) return; e.preventDefault(); firePad(i, 1, 'toque'); });
-    p.querySelector('.gear').addEventListener('pointerdown', e => { e.stopPropagation(); editPad(i); });
-    box.append(p);
-  }
+    p.querySelector('.gear').addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); editPad(i); });
+    box.append(p); refreshPad(i);
+  });
+  const add = el('label', { class: 'pad padd', title: 'Agregar pads desde audio o video del teléfono' }, `<b class="em">＋</b><span>Agregar pad</span><input type="file" accept="audio/*,video/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.mp4,.webm,.mov" multiple hidden>`);
+  add.querySelector('input').onchange = e => addPads([...e.target.files]).finally(() => { e.target.value = ''; });
+  box.append(add);
 }
-function refreshPad(i) { const p = sampler.pads[i], n = $$('.pad')[i]; n.querySelector('.em').textContent = p.emoji; n.querySelector('span').textContent = p.name; n.querySelector('.lic').textContent = p.license === 'cc0' ? 'CC0' : p.license === 'cc' ? 'CC' : '⚠ lic.'; }
+async function addPads(files) {
+  let ok = 0;
+  for (const f of files) {
+    toast('Creando pad: ' + f.name);
+    try { const r = await sampler.addFromFile(f); ok++; audit('agregar pad', 'ok', `${f.name} · ${r.pad.buffer.duration.toFixed(1)} s${r.cut ? ' (recortado a 60 s)' : ''} · nivel ${(20 * Math.log10(r.pad.norm)).toFixed(1)} dB`); if (r.cut) toast('Pad recortado a 60 s: ajusta inicio/fin'); }
+    catch (e) { audit('agregar pad', 'error', f.name + ': ' + e.message); toast('No se pudo crear el pad: ' + e.message); }
+  }
+  buildPads(); if (ok === 1) editPad(sampler.pads.length - 1);
+}
+function refreshPad(i) { const p = sampler.pads[i], n = $$('.pad')[i]; if (!p || !n) return; n.style.setProperty('--pc', p.color || PAD_COLORS[i % 16]); n.querySelector('.em').textContent = p.err ? '⚠️' : p.buffer ? p.emoji : '⏳'; n.querySelector('span').textContent = p.name; n.querySelector('.lic').textContent = p.license === 'cc0' ? 'CC0' : p.license === 'cc' ? 'CC' : '⚠ lic.'; }
 function firePad(i, vel = 1, via = 'toque') {
   const ok = sampler.trigger(i, vel); const n = $$('.pad')[i];
-  if (!n) return;
-  n.classList.add('hit'); setTimeout(() => n.classList.remove('hit'), 120);
-  audit('pad ' + (i + 1), ok ? 'ok' : 'error', sampler.pads[i].name + ' · ' + via);
+  if (!n) return; n.classList.add('hit'); setTimeout(() => n.classList.remove('hit'), 120);
+  audit('pad ' + (i + 1), ok ? 'ok' : 'error', (sampler.pads[i]?.name || '') + ' · ' + via);
 }
 function editPad(i) {
-  const p = sampler.pads[i], box = $('#padEdit'); box.classList.remove('hidden');
+  const p = sampler.pads[i], box = $('#padEdit'); if (!p) return box.classList.add('hidden'); box.classList.remove('hidden');
+  const D = p.buffer ? p.buffer.duration : 0, isB = sampler.pads[i] && BUILTIN_IDS.includes(p.uid);
   const sl = (k, label, min, max, st) => `<label>${label} <b class="v-${k}">${p[k]}</b><input type="range" data-k="${k}" min="${min}" max="${max}" step="${st}" value="${p[k]}"></label>`;
-  box.innerHTML = `<div class="row between"><h3>Pad ${i + 1}: ${esc(p.name)}</h3><button class="btn sm" id="peX">Cerrar</button></div>
-    <div class="row wrap"><label class="btn neon">Cargar WAV/FLAC<input type="file" id="peFile" accept=".wav,.flac,.mp3,audio/*" hidden></label><button class="btn" id="peReset">Sonido original</button><button class="btn" id="peTest">Probar</button></div>
+  box.innerHTML = `<div class="row between"><h3>Pad ${i + 1}</h3><button class="btn sm" id="peX">Cerrar</button></div>
+    <div class="row"><input id="peName" value="${esc(p.name)}" maxlength="22" placeholder="Nombre"><input type="color" id="peColor" value="${p.color || PAD_COLORS[i % 16]}" title="Color"></div>
+    <div class="row wrap" style="margin-top:6px"><button class="btn sm" id="peL" title="Mover a la izquierda">◀</button><button class="btn sm" id="peR" title="Mover a la derecha">▶</button><button class="btn sm" id="peTest">▶ Probar</button>
+      <label class="btn sm neon">Cambiar sonido<input type="file" id="peFile" accept="audio/*,video/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.mp4,.webm" hidden></label>${isB ? '<button class="btn sm" id="peReset">Sonido original</button>' : ''}<button class="btn sm danger" id="peDel">🗑 Borrar</button></div>
     <div id="peLic" class="small" style="margin:6px 0"></div>
+    <div class="knobs"><label>Inicio <b id="peSv">${(p.start || 0).toFixed(2)} s</b><input type="range" id="peS" min="0" max="${D.toFixed(2)}" step="0.01" value="${p.start || 0}"></label><label>Fin <b id="peEv">${(p.end || D).toFixed(2)} s</b><input type="range" id="peE" min="0" max="${D.toFixed(2)}" step="0.01" value="${p.end || D}"></label></div>
     <div class="knobs">${sl('gain', 'Volumen', 0, 1.5, 0.01)}${sl('reverb', 'Reverb', 0, 1, 0.01)}${sl('delay', 'Delay', 0, 0.9, 0.01)}${sl('delayTime', 'Tiempo delay (s)', 0.05, 1, 0.01)}${sl('low', 'Graves dB', -24, 12, 0.5)}${sl('mid', 'Medios dB', -24, 12, 0.5)}${sl('high', 'Agudos dB', -24, 12, 0.5)}</div>
-    <label class="chk"><input type="checkbox" id="peChoke" ${p.choke ? 'checked' : ''}> Cortar el anterior al volver a tocar</label>`;
+    <label class="chk"><input type="checkbox" id="peChoke" ${p.choke ? 'checked' : ''}> Cortar el anterior al volver a tocar</label>
+    <p class="muted tiny">Duración ${D.toFixed(2)} s · nivel automático ${(20 * Math.log10(p.norm || 1)).toFixed(1)} dB (pads propios a -14 LUFS) · todo pasa por el limitador.</p>`;
   const lic = () => { $('#peLic').innerHTML = p.license === 'cc0' ? '<span class="badge ok">Licencia CC0 ✓</span>' : p.license === 'cc' ? '<span class="badge warn">Creative Commons (revisa atribución)</span>' : '<span class="badge bad">Licencia sin verificar: úsalo solo si es tuyo o tienes permiso</span>'; };
   lic();
-  box.querySelectorAll('input[type=range]').forEach(r => r.oninput = () => { p[r.dataset.k] = +r.value; box.querySelector('.v-' + r.dataset.k).textContent = r.value; sampler.apply(i); sampler.save(); });
+  box.querySelectorAll('input[type=range][data-k]').forEach(r => r.oninput = () => { p[r.dataset.k] = +r.value; box.querySelector('.v-' + r.dataset.k).textContent = r.value; sampler.apply(i); sampler.save(); });
+  const trim = () => { const s0 = +$('#peS').value, e0 = +$('#peE').value; sampler.setTrim(i, Math.min(s0, e0 - 0.02), Math.max(e0, s0 + 0.02)); $('#peSv').textContent = (p.start || 0).toFixed(2) + ' s'; $('#peEv').textContent = (p.end || D).toFixed(2) + ' s'; };
+  $('#peS').oninput = trim; $('#peE').oninput = trim; $('#peS').onchange = $('#peE').onchange = () => { audit('recortar pad ' + (i + 1), 'ok', `${(p.start || 0).toFixed(2)}–${(p.end || D).toFixed(2)} s`); firePad(i, 1, 'prueba'); };
+  $('#peName').onchange = e => { p.name = e.target.value.trim() || p.name; sampler.save(); refreshPad(i); audit('renombrar pad ' + (i + 1), 'ok', p.name); };
+  $('#peColor').oninput = e => { p.color = e.target.value; sampler.save(); refreshPad(i); };
   $('#peChoke').onchange = e => { p.choke = e.target.checked; sampler.save(); };
   $('#peX').onclick = () => box.classList.add('hidden');
   $('#peTest').onclick = () => firePad(i, 1, 'prueba');
-  $('#peReset').onclick = async () => { await sampler.resetPad(i); refreshPad(i); editPad(i); audit('pad ' + (i + 1) + ' original', 'ok'); };
+  $('#peL').onclick = () => { if (sampler.move(i, -1)) { buildPads(); editPad(i - 1); } };
+  $('#peR').onclick = () => { if (sampler.move(i, 1)) { buildPads(); editPad(i + 1); } };
+  $('#peDel').onclick = async () => { if (!confirm('¿Borrar el pad "' + p.name + '"?')) return; await sampler.remove(i); audit('borrar pad', 'ok', p.name); buildPads(); box.classList.add('hidden'); };
+  if ($('#peReset')) $('#peReset').onclick = async () => { await sampler.resetPad(i); refreshPad(i); editPad(i); audit('pad ' + (i + 1) + ' original', 'ok'); };
   $('#peFile').onchange = async e => {
     const f = e.target.files[0]; if (!f) return; $('#peLic').textContent = 'Cargando (con reintentos)…';
     try { const r = await sampler.loadCustom(i, f); refreshPad(i); editPad(i); audit('cargar pad ' + (i + 1), 'ok', f.name + ' · licencia ' + r.license); }
     catch (err) { $('#peLic').innerHTML = '<span class="badge bad">No se pudo cargar tras 3 intentos: ' + esc(err.message) + '</span>'; audit('cargar pad ' + (i + 1), 'error', f.name + ': ' + err.message); }
   };
-  box.scrollIntoView({ behavior: 'smooth' });
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ---------------- EQ maestro ----------------
@@ -567,8 +614,9 @@ function applyPreset(v) {
 }
 
 // ---------------- Pantalla completa + horizontal ----------------
-async function lockLandscape() { try { await screen.orientation.lock('landscape'); audit('bloquear horizontal', 'ok'); return true; } catch (e) { return false; } }
+async function lockLandscape() { if (window.DJMiliAndroid) { window.DJMiliAndroid.setOrientation('landscape'); return true; } try { await screen.orientation.lock('landscape'); audit('bloquear horizontal', 'ok'); return true; } catch (e) { return false; } }
 async function goLandscape() {
+  if (window.DJMiliAndroid) { const on = window.DJMiliAndroid.toggleLandscape(); toast(on ? 'Horizontal fijo' : 'Giro automático'); audit('pantalla horizontal (app)', 'ok', on ? 'fijo' : 'auto'); return; }
   try {
     if (document.fullscreenElement) { await document.exitFullscreen(); try { screen.orientation.unlock(); } catch (e) {} return; }
     await (document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }) || Promise.reject(new Error('sin pantalla completa')));
@@ -578,75 +626,12 @@ async function goLandscape() {
 }
 const installed = () => matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
 
-// ---------------- Grabación ----------------
-let recTimer = null, recNameDirty = false; const recTitles = new Set();
-function defaultRecName() {
-  const d = new Date(), p2 = x => String(x).padStart(2, '0');
-  const ts = [...recTitles].slice(0, 3).join(' + ') || eng.decks.map(x => x.track?.title).filter(Boolean).join(' + ') || 'Set DJ Mili';
-  return `${ts} - ${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}h${p2(d.getMinutes())}`;
-}
-const safeName = s => s.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 90) || 'set';
-function id3(meta) { // ID3v2.3: TIT2, TPE1, TYER, COMM, TXXX tags, TSSE
-  const te = new TextEncoder(); const frames = [];
-  const fr = (id, body) => { const h = new Uint8Array(10); h.set([...id].map(c => c.charCodeAt(0))); const n = body.length; h[4] = n >>> 24; h[5] = (n >> 16) & 255; h[6] = (n >> 8) & 255; h[7] = n & 255; frames.push(h, body); };
-  const txt = (id, v) => { if (!v) return; const b = te.encode(v); const body = new Uint8Array(b.length + 1); body[0] = 3; body.set(b, 1); fr(id, body); }; // 3 = UTF-8 (soportado por casi todos los reproductores)
-  txt('TIT2', meta.title); txt('TPE1', meta.user); txt('TYER', meta.date?.slice(0, 4)); txt('TSSE', meta.software);
-  if (meta.comment) { const b = te.encode(meta.comment); const body = new Uint8Array(b.length + 5); body.set([3, 115, 112, 97, 0]); body.set(b, 5); fr('COMM', body); }
-  if (meta.tags) { const b = te.encode('TAGS\0' + meta.tags); const body = new Uint8Array(b.length + 1); body[0] = 3; body.set(b, 1); fr('TXXX', body); }
-  const size = frames.reduce((a, f) => a + f.length, 0); const h = new Uint8Array(10); h.set([73, 68, 51, 3, 0, 0]); h[6] = (size >> 21) & 127; h[7] = (size >> 14) & 127; h[8] = (size >> 7) & 127; h[9] = size & 127;
-  return [h, ...frames];
-}
-function encodeMP3(r, kbps, meta, onProg) {
-  return new Promise((res, rej) => {
-    const w = new Worker(new URL('./mp3worker.js', import.meta.url));
-    const L = r.L.slice(), R = r.R.slice();
-    w.onmessage = e => { if (e.data.progress !== undefined) onProg && onProg(e.data.progress); if (e.data.done) { w.terminate(); res(new Blob([...id3(meta), ...e.data.parts], { type: 'audio/mpeg' })); } };
-    w.onerror = e => { w.terminate(); rej(new Error(e.message || 'MP3')); };
-    w.postMessage({ L, R, sampleRate: r.sampleRate, kbps }, [L.buffer, R.buffer]);
-  });
-}
-async function toggleRec() {
-  const btn = $('#recBtn');
-  if (!eng.rec) {
-    try {
-      await eng.recStart({ compressed: $('#recComp').checked }); recTitles.clear(); eng.decks.forEach(d => d.playing && d.track && recTitles.add(d.track.title));
-      btn.classList.add('on'); btn.textContent = '■ Detener y exportar'; $('#recBadge').classList.remove('hidden'); audit('grabar inicio', 'ok');
-      recTimer = setInterval(() => { eng.decks.forEach(d => d.playing && d.track && recTitles.add(d.track.title)); if (!recNameDirty) $('#recName').value = defaultRecName(); const s = eng.recSeconds(); $('#recBadge span').textContent = fmt(s); $('#recInfo').textContent = fmt(s) + ' · ~' + (s * eng.ctx.sampleRate * 4 / 1048576).toFixed(1) + ' MB en memoria'; if (s > 3600) toast('Llevas más de 60 min: exporta pronto para no llenar la memoria'); }, 500);
-    } catch (e) { audit('grabar inicio', 'error', e.message); toast('No se pudo grabar: ' + e.message); }
-    return;
-  }
-  clearInterval(recTimer); btn.classList.remove('on'); btn.textContent = '● Grabar'; $('#recBadge').classList.add('hidden');
-  const r = await eng.recStop(); if (!r || !r.L.length) { toast('Grabación vacía'); return; }
-  if (!recNameDirty || !$('#recName').value.trim()) $('#recName').value = defaultRecName();
-  const user = settings.get('user', 'Alfredo'), name = safeName($('#recName').value);
-  const meta = { title: name, user, date: new Date(r.started).toISOString(), tags: $('#recTags').value, comment: `Grabado en DJ Mili v${VERSION}, ${fmt(r.seconds)}`, software: 'DJ Mili ' + VERSION };
-  const f = $('#recFmt').value; const want = { wav: /wav|all/.test(f), flac: /flac|all/.test(f), mp3: /mp3|all/.test(f) }; const kbps = f === 'mp3-192' ? 192 : 320;
-  $('#recInfo').textContent = 'Codificando…'; await new Promise(res => setTimeout(res, 30));
-  const outs = [];
-  try {
-    if (want.wav) outs.push(['wav', encodeWAV([r.L, r.R], r.sampleRate, meta), '16 bits']);
-    if (want.flac) outs.push(['flac', encodeFLAC([r.L, r.R], r.sampleRate, meta), '16 bits']);
-    if (want.mp3) outs.push(['mp3', await encodeMP3(r, kbps, meta, p => $('#recInfo').textContent = 'MP3 ' + Math.round(p * 100) + '%'), kbps + ' kbps']);
-    if (r.compressed) outs.push([r.compressed.ext, r.compressed.blob, r.compressed.type]);
-  } catch (e) { audit('exportar grabación', 'error', e.message); toast('Error al exportar: ' + e.message); return; }
-  window.__djm.lastRec = outs;
-  for (const [ext, blob, info] of outs) {
-    const url = URL.createObjectURL(blob); const fn = `${name}.${ext}`;
-    const it = el('div', { class: 'it' }, `<div class="t"><b>${esc(fn)}</b><small>${fmt(r.seconds)} · ${(blob.size / 1048576).toFixed(2)} MB · ${r.sampleRate} Hz · ${esc(info)}</small></div>`);
-    const a = el('a', { class: 'btn neon', href: url, download: fn }, '⬇ Bajar'); it.append(a);
-    $('#recList').prepend(it);
-    audit('exportar ' + ext.toUpperCase(), 'ok', `${fn} ${(blob.size / 1048576).toFixed(2)} MB`);
-  }
-  recNameDirty = false;
-  $('#recInfo').textContent = 'Listo: ' + outs.map(o => o[0].toUpperCase()).join(' + ');
-}
-
 // ---------------- Bitácora ----------------
 async function renderLog() {
   const all = await auditAll(); const last = all.slice(-150).reverse();
   $('#logTbl').innerHTML = `<p class="muted tiny">${all.length} registros</p><table><tr><th>Hora</th><th>Usuario</th><th>Acción</th><th>Resultado</th></tr>${last.map(e => `<tr><td>${new Date(e.timestamp).toLocaleString('es-MX', { hour12: false })}</td><td>${esc(e.usuario)}</td><td>${esc(e.accion)}<br><span class="muted">${esc(e.detalle || '')}</span></td><td class="${e.resultado}">${esc(e.resultado)}</td></tr>`).join('')}</table>`;
 }
-function download(name, text, type) { const a = el('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name }); document.body.append(a); a.click(); a.remove(); }
+function download(name, text, type) { if (window.DJMiliAndroid) { try { const r = window.DJMiliAndroid.saveText(name, type || 'text/plain', String(text)); toast(r || 'Guardado en Descargas'); return; } catch (e) {} } const a = el('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name }); document.body.append(a); a.click(); a.remove(); }
 async function exportLog(kind) {
   const all = (await auditAll()).map(({ timestamp, usuario, accion, resultado, detalle }) => ({ timestamp, usuario, accion, resultado, detalle }));
   if (kind === 'json') download('bitacora-djmili.json', JSON.stringify(all, null, 2), 'application/json');
@@ -681,7 +666,7 @@ function onMidi(ev) {
   if (n.type === 'checkbox') { if (ev.type !== 'noteoff' && ev.val > 0) { n.checked = !n.checked; n.dispatchEvent(new Event('change')); flash(n.parentElement); } return; }
   if (ev.type === 'note' || (ev.type === 'cc' && ev.val > 0.5)) { n.click(); flash(n); }
 }
-function renderMidiMap() { const m = midi.map; const ks = Object.keys(m); $('#midiMap').innerHTML = ks.length ? ks.map(k => `${esc(m[k])} ← ${esc(k)}`).join('<br>') : 'Pads: notas 36‑51 (automático)'; }
+function renderMidiMap() { const m = midi.map; const ks = Object.keys(m); $('#midiMap').innerHTML = ks.length ? ks.map(k => `${esc(m[k])} ← ${esc(k)}`).join('<br>') : 'Pads: notas 36‑99 (automático)'; }
 let learnArmed = false;
 function armLearn() {
   if (!midi.access) return toast('Primero activa MIDI');
@@ -736,11 +721,63 @@ function partyLoop(t = 0) {
 // ---------------- Pestañas, enlaces y bucle ----------------
 let curTab = 'mix';
 // Todo vive en una sola pantalla: "showTab" solo desplaza a la sección (o abre el menú)
-const SECT = { mix: '#deck0', pads: '#padsCard', eq: '#eqCard', rec: '#recCard', lib: '#libCard' };
+const SECT = { mix: '#deck0', pads: '#padsCard', eq: '#eqCard', lib: '#libCard' };
 function showTab(t) { if (t === 'more') return openPanel('#menuPanel'); if (t === 'yt') return openPanel('#ytPanel'); const e = $(SECT[t] || '#deck0'); if (e && t !== 'mix') e.scrollIntoView({ block: 'start' }); if (t === 'eq') drawEQ(); }
-function openPanel(sel) { $(sel).classList.remove('hidden'); if (sel === '#menuPanel') { curTab = 'more'; renderLog(); renderPerms(); } }
+function openPanel(sel) { $(sel).classList.remove('hidden'); if (sel === '#menuPanel') { curTab = 'more'; renderLog(); renderPerms(); } if (sel === '#playerPanel') { curTab = 'player'; renderPlayer(); } }
 function closePanel(sel) { $(sel).classList.add('hidden'); curTab = 'mix'; }
+// ---------------- Reproductor (música y video) ----------------
+let player;
+function applyWide() {
+  const on = $('#wideOn').checked, amount = +$('#wideAmt').value, headphones = $('#wideHp').checked, mst = $('#wideMaster').checked;
+  settings.set('wide', { on, amount, headphones, mst });
+  player?.wide?.set({ on, amount, headphones }); eng.wide.set({ on: on && mst, amount, headphones });
+}
+function renderPlayer(msg) {
+  if (!player) return; const ts = tracks, t = player.cur, v = player.v;
+  $('#plT').textContent = t ? t.title : 'Nada sonando'; $('#plA').textContent = msg || (t ? [t.artist, t.bpm ? t.bpm.toFixed(0) + ' BPM' : '', t.camelot].filter(Boolean).join(' · ') : 'Agrega canciones o videos abajo');
+  $('#plPlay').textContent = v.paused ? '▶' : '❚❚'; $('#plShuf').classList.toggle('neon', player.shuffle);
+  $('#plRep').textContent = player.repeat === 'one' ? '🔂' : '🔁'; $('#plRep').classList.toggle('neon', player.repeat !== 'off'); $('#plRep').title = { off: 'Sin repetir', all: 'Repetir lista', one: 'Repetir una' }[player.repeat];
+  $('#plRate').textContent = player.ctx ? player.ctx.sampleRate + ' Hz' : (eng.ctx.sampleRate + ' Hz');
+  $('#plHD').textContent = player.hdText() || 'HD depende del archivo: FLAC/WAV conservan todo; un MP3/AAC no gana calidad por subir la frecuencia.';
+  const q = $('#plQueue'); q.innerHTML = ''; $('#plCount').textContent = '(' + player.list.length + ')';
+  player.list.forEach((id, i) => { const tr = ts.find(x => x.id === id); if (!tr) return;
+    const it = el('div', { class: 'it' + (i === player.idx ? ' cur' : '') }, `<div class="t"><b>${i === player.idx ? '▶ ' : ''}${tr.video ? '<span class="vid">VIDEO</span>' : ''}${esc(tr.title)}</b><small>${esc(tr.artist || '')} ${tr.dur ? fmt(tr.dur) : ''}</small></div>`);
+    it.querySelector('.t').onclick = () => player.play(i); const x = el('button', { class: 'btn sm' }, '✕'); x.onclick = () => player.remove(i); it.append(x); q.append(it); });
+  const pls = settings.get('playlists', []); $('#plFromList').innerHTML = '<option value="">+ Desde lista…</option>' + pls.map((p, i) => `<option value="${i}">${esc(p.name)} (${p.ids.length})</option>`).join('');
+  const showVid = !!(t && v.videoWidth); v.classList.toggle('hidden', !showVid); $('#plArt').classList.toggle('hidden', showVid); $('#plArt').classList.toggle('spin', !v.paused);
+}
+function renderPlRes() {
+  const qs = $('#plQ').value.trim().toLowerCase(), box = $('#plRes'); box.innerHTML = ''; if (!qs) return;
+  tracks.filter(t => [t.title, t.artist, t.name].join(' ').toLowerCase().includes(qs)).slice(0, 12).forEach(t => {
+    const it = el('div', { class: 'it' }, `<div class="t"><b>${t.video ? '<span class="vid">VIDEO</span>' : ''}${esc(t.title)}</b><small>${esc(t.artist || '')}</small></div>`);
+    const a = el('button', { class: 'btn sm' }, '+'), pn = el('button', { class: 'btn sm neon' }, '▶'); a.onclick = () => { player.add([t.id]); toast('Agregada: ' + t.title); }; pn.onclick = () => player.add([t.id], true); it.append(pn, a); box.append(it); });
+}
+function bindPlayer() {
+  player = new Player({ video: $('#pv'), getBlob, tracks: () => tracks, settings, audit, onState: m => renderPlayer(m) });
+  window.__djm.player = player;
+  const w = settings.get('wide', { on: false, amount: 0.5, headphones: true, mst: false }); $('#wideOn').checked = w.on; $('#wideAmt').value = w.amount; $('#wideHp').checked = w.headphones; $('#wideMaster').checked = w.mst;
+  player.onCtx = () => applyWide(); applyWide();
+  ['#wideOn', '#wideHp', '#wideMaster'].forEach(s => $(s).onchange = () => { applyWide(); audit('envolvente', 'ok', `${$('#wideOn').checked ? 'on' : 'off'} ${$('#wideAmt').value}${$('#wideMaster').checked ? ' +mezcla' : ''}`); });
+  $('#wideAmt').oninput = applyWide;
+  $('#plBtn').onclick = () => openPanel('#playerPanel'); $('#plClose').onclick = () => closePanel('#playerPanel');
+  $('#plPlay').onclick = () => player.toggle(); $('#plNext').onclick = () => player.next(); $('#plPrev').onclick = () => player.prev();
+  $('#plShuf').onclick = () => { player.shuffle = !player.shuffle; player.order = null; player.save(); renderPlayer(); };
+  $('#plRep').onclick = () => { player.repeat = { off: 'all', all: 'one', one: 'off' }[player.repeat]; player.save(); renderPlayer(); };
+  $('#plVol').value = settings.get('plVol', 0.9); $('#plVol').oninput = e => { settings.set('plVol', +e.target.value); if (player.vol) player.vol.gain.setTargetAtTime(+e.target.value, player.ctx.currentTime + 0.01, 0.02); };
+  const v = player.v, sk = $('#plSeek'); let dragging = false;
+  v.addEventListener('timeupdate', () => { if (!dragging && v.duration) sk.value = v.currentTime / v.duration * 1000; $('#plCur').textContent = fmt(v.currentTime); $('#plDur').textContent = fmt(v.duration); });
+  v.addEventListener('loadedmetadata', () => renderPlayer());
+  sk.oninput = () => { dragging = true; $('#plCur').textContent = fmt(sk.value / 1000 * (v.duration || 0)); }; sk.onchange = () => { if (v.duration) v.currentTime = sk.value / 1000 * v.duration; dragging = false; };
+  $('#plAddAll').onclick = () => { player.add(tracks.map(t => t.id)); toast('Biblioteca agregada a la lista'); };
+  $('#plFromList').onchange = e => { const pl = settings.get('playlists', [])[+e.target.value]; if (pl) player.add(pl.ids); e.target.value = ''; };
+  $('#plClear').onclick = () => player.clear();
+  $('#plQ').oninput = renderPlRes;
+  $('#plFile').onchange = async e => { const fs = [...e.target.files]; e.target.value = ''; const added = await importFiles(fs); if (added?.length) player.add(added.map(t => t.id), true); };
+}
 function bindUI() {
+  bindPlayer();
+  $('#hdOn').checked = settings.get('hd', true); $('#hdOn').onchange = e => { settings.set('hd', e.target.checked); toast('Se aplica al volver a abrir la app'); audit('calidad HD', 'ok', e.target.checked ? '48 kHz' : 'nativa'); };
+  $('#hdInfo').textContent = `Mezcla DJ: ${eng.ctx.sampleRate} Hz, proceso float 32 bits, latencia ${Math.round(((eng.ctx.baseLatency || 0) + (eng.ctx.outputLatency || 0)) * 1000)} ms. HD depende del archivo de origen.`;
   $('#ytBtn').onclick = () => openPanel('#ytPanel'); $('#ytClose').onclick = () => { closePanel('#ytPanel'); };
   $('#menuBtn').onclick = () => openPanel('#menuPanel'); $('#menuClose').onclick = () => closePanel('#menuPanel');
   $('#sheetX').onclick = () => $('#sheet').classList.add('hidden'); $('#sheet').onclick = e => { if (e.target.id === 'sheet') $('#sheet').classList.add('hidden'); };
@@ -761,13 +798,10 @@ function bindUI() {
   $('#eqSave').onclick = () => { const n = prompt('Nombre del preset'); if (!n) return; const u = settings.get('eqPresets', {}); u[n] = JSON.parse(JSON.stringify(eqBands)); settings.set('eqPresets', u); presetList(); audit('guardar preset EQ', 'ok', n); toast('Preset guardado'); };
   $('#eqDel').onclick = () => { const v = $('#eqPreset').value; if (!v.startsWith('u:')) return toast('Elige un preset tuyo (★)'); const u = settings.get('eqPresets', {}); delete u[v.slice(2)]; settings.set('eqPresets', u); presetList(); };
   $('#eqFlat').onclick = () => applyPreset('b:Plano');
-  $('#recBtn').onclick = toggleRec;
   $('#fullBtn').onclick = goLandscape;
   $('#padStop').onclick = () => { sampler.stopAll(); audit('parar pads', 'ok'); };
+  $('#padReset').onclick = async () => { if (!confirm('¿Volver a los 16 pads de fábrica? Se borran los pads propios.')) return; await sampler.resetAll(); buildPads(); audit('pads de fábrica', 'ok'); toast('Pads de fábrica restaurados'); };
   addEventListener('resize', () => { clearTimeout(drawEQ.rt); drawEQ.rt = setTimeout(() => { drawEQ(); deckUI.forEach(u => u.drawOverview()); }, 200); });
-  $('#recName').oninput = () => { recNameDirty = true; }; $('#recName').value = 'Set DJ Mili';
-  { const t = eng.compressedType(); $('#recCompFmt').textContent = t ? t.ext.toUpperCase() : 'n/d'; if (!t) $('#recComp').disabled = true; }
-  $('#recFmt').value = settings.get('recFmt', 'mp3-320'); $('#recFmt').onchange = e => settings.set('recFmt', e.target.value);
   $('#padVol').value = settings.get('padVol', 0.9); sampler.bus.gain.value = +$('#padVol').value; $('#padVol').oninput = e => { sampler.bus.gain.setTargetAtTime(+e.target.value, eng.t(), 0.01); settings.set('padVol', +e.target.value); };
   $('#partyBtn').onclick = () => party(true); $('#partyX').onclick = () => party(false);
   // micro
@@ -812,5 +846,5 @@ function loop(t) {
   const gr = eng.gr || 0; const gb = $('#grBadge'); gb.textContent = gr < -0.1 ? 'LIM ' + gr.toFixed(1) : 'LIM'; gb.classList.toggle('act', gr < -0.1);
   if (!partyOn && curTab === 'mix') deckUI.forEach(u => { if (u.visible !== false) { u.draw(); u.drawJog(); u.drawVU(); } });
 }
-window.__djm.api = { measureLoudness, trackNorm, loadToDeck: (i, id) => loadToDeck(i, tracks.find(t => t.id === id)), tracks: () => tracks, firePad, toggleRec, showTab, applyPreset, deckUI, makeAudioOnly: id => makeAudioOnly(tracks.find(t => t.id === id)), deleteTrack: id => deleteTrack(tracks.find(t => t.id === id)), decodeTrack: id => decodeTrack(tracks.find(t => t.id === id)) };
+window.__djm.api = { measureLoudness, trackNorm, loadToDeck: (i, id) => loadToDeck(i, tracks.find(t => t.id === id)), tracks: () => tracks, firePad, showTab, applyPreset, deckUI, makeAudioOnly: id => makeAudioOnly(tracks.find(t => t.id === id)), deleteTrack: id => deleteTrack(tracks.find(t => t.id === id)), decodeTrack: id => decodeTrack(tracks.find(t => t.id === id)) };
 boot();

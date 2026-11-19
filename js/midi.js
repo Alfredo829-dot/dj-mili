@@ -1,4 +1,4 @@
-// Control MIDI (USB OTG en Android Chrome). Mapeo automático de pads (notas 36-51) + MIDI learn.
+// Control MIDI (USB OTG en Android Chrome). Mapeo automático de pads (notas 36-99) + MIDI learn.
 import { settings } from './store.js';
 export class Midi {
   constructor(handler) { this.handler = handler; this.access = null; this.map = settings.get('midimap', {}); this.learnTarget = null; this.onMsg = null; this.onState = null; }
@@ -25,7 +25,7 @@ export class Midi {
     this.onMsg && this.onMsg({ type, ch, num: d1, val, raw: [...e.data], device: inp.name });
     if (this.learnTarget && type !== 'noteoff') { this.map[k] = this.learnTarget; settings.set('midimap', this.map); const t = this.learnTarget; this.learnTarget = null; this.handler({ learned: t, key: k }); return; }
     let target = this.map[k];
-    if (!target && (type === 'note' || type === 'noteoff') && d1 >= 36 && d1 <= 51) target = 'pad' + (d1 - 36); // mapeo automático
+    if (!target && (type === 'note' || type === 'noteoff') && d1 >= 36 && d1 <= 99) target = 'pad' + (d1 - 36); // mapeo automático
     if (target) this.handler({ target, type, val, key: k });
   }
   clear() { this.map = {}; settings.set('midimap', {}); }

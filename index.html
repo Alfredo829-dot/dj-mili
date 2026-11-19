@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="css/app.css?v=4">
+<link rel="stylesheet" href="css/app.css?v=6">
 </head>
 <body>
 <div id="lock" class="overlay hidden">
@@ -35,9 +35,9 @@
   <div class="logo">DJ <b>MILI</b></div>
   <div id="meter"><i></i></div>
   <span id="grBadge" class="grb" title="Reducción del limitador">LIM</span>
-  <div id="recBadge" class="hidden">● <span>0:00</span></div>
   <button id="fullBtn" class="icon" title="Pantalla completa y horizontal">⛶</button>
   <button id="ytBtn" class="icon" title="YouTube">📺</button>
+  <button id="plBtn" class="icon" title="Reproductor de música y video">🎵</button>
   <button id="partyBtn" class="icon" title="Modo fiesta">🎉</button>
   <button id="menuBtn" class="icon" title="Menú">☰</button>
 </header>
@@ -57,9 +57,9 @@
   <div id="deck1" class="deck"></div>
 
   <section class="card" id="padsCard">
-    <div class="row between"><h3>Pads</h3><span class="muted tiny">⚙ = ajustes del pad</span></div>
+    <div class="row between"><h3>Pads</h3><span class="muted tiny">⚙ = editar · ＋ = agregar del cel</span></div>
     <div id="pads" class="pads"></div>
-    <div class="row"><button class="btn sm" id="padStop" title="Callar todos los pads">■ Parar</button><label class="inl" style="flex:1">Vol. pads<input type="range" id="padVol" min="0" max="1.5" step="0.01" value="0.9" data-midi="padvol"></label></div>
+    <div class="row"><button class="btn sm" id="padStop" title="Callar todos los pads">■ Parar</button><button class="btn sm" id="padReset" title="Volver a los 16 pads de fábrica">↺ Fábrica</button><label class="inl" style="flex:1">Vol. pads<input type="range" id="padVol" min="0" max="1.5" step="0.01" value="0.9" data-midi="padvol"></label></div>
     <div id="padEdit" class="hidden"></div>
   </section>
 
@@ -71,15 +71,6 @@
       <div id="eqEdit" class="eqedit"></div>
       <div class="row wrap"><button class="btn sm" id="eqSave">Guardar preset</button><button class="btn sm" id="eqDel">Borrar preset</button><button class="btn sm" id="eqFlat">Plano</button></div>
     </details>
-  </section>
-
-  <section class="card" id="recCard">
-    <div class="row between"><h3>Grabar mezcla</h3><span id="recInfo" class="muted small"></span></div>
-    <div class="row"><input id="recName" placeholder="Nombre del archivo"><select id="recFmt">
-      <option value="mp3-320">MP3 320</option><option value="mp3-192">MP3 192</option><option value="wav">WAV</option><option value="flac">FLAC</option><option value="wav+mp3">WAV + MP3</option><option value="all">WAV+FLAC+MP3</option></select></div>
-    <div class="row"><input id="recTags" placeholder="Etiquetas: cumbia, fiesta"><label class="chk small"><input type="checkbox" id="recComp"> + <span id="recCompFmt">WebM</span></label></div>
-    <button id="recBtn" class="btn rec big" data-midi="rec">● Grabar</button>
-    <div id="recList" class="list"></div>
   </section>
 
   <section class="card" id="libCard">
@@ -114,6 +105,33 @@
 </main>
 
 <!-- YouTube: ventana aparte dentro del sitio -->
+<div id="playerPanel" class="panel hidden">
+  <div class="panelhd"><b>🎵 Reproductor</b><span id="plRate" class="badge">—</span><button class="btn sm" id="plClose">✕ Volver</button></div>
+  <div class="panelbody plbody">
+    <div class="plmain">
+      <div class="plstage"><video id="pv" playsinline preload="metadata"></video><div id="plArt" class="plart"><span>🎵</span></div></div>
+      <div class="plside">
+        <div class="pltitle"><b id="plT">Nada sonando</b><small id="plA">Agrega canciones o videos abajo</small></div>
+        <div class="plseek"><span id="plCur">0:00</span><input type="range" id="plSeek" min="0" max="1000" value="0"><span id="plDur">0:00</span></div>
+        <div class="plctl"><button id="plShuf" class="btn" title="Aleatorio">🔀</button><button id="plPrev" class="btn" title="Anterior">⏮</button><button id="plPlay" class="btn neon">▶</button><button id="plNext" class="btn" title="Siguiente">⏭</button><button id="plRep" class="btn" title="Repetir">🔁</button></div>
+        <label class="inl">Vol<input type="range" id="plVol" min="0" max="1" step="0.01" value="0.9"></label>
+        <div class="plfx">
+          <label class="chk"><input type="checkbox" id="wideOn"> <b>Envolvente</b> (estéreo más amplio, compatible con mono)</label>
+          <label class="inl">Cantidad<input type="range" id="wideAmt" min="0" max="1" step="0.01" value="0.5"></label>
+          <label class="chk small"><input type="checkbox" id="wideHp" checked> Modo audífonos (crossfeed suave)</label>
+          <label class="chk small"><input type="checkbox" id="wideMaster"> Aplicar también a la mezcla DJ</label>
+        </div>
+        <p id="plHD" class="muted tiny"></p>
+      </div>
+    </div>
+    <div class="row wrap" style="margin:8px 0"><label class="btn sm neon">📱 Del cel<input type="file" id="plFile" accept="audio/*,video/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.mp4,.webm,.mov,.m4v,.mkv" multiple hidden></label><button id="plAddAll" class="btn sm">+ Toda la biblioteca</button><select id="plFromList"><option value="">+ Desde lista…</option></select><button id="plClear" class="btn sm">Vaciar</button></div>
+    <input id="plQ" type="search" placeholder="Buscar en la biblioteca para agregar…" class="search">
+    <div id="plRes" class="list"></div>
+    <h3 style="margin-top:8px">Lista de reproducción <span id="plCount" class="muted tiny"></span></h3>
+    <div id="plQueue" class="list scroll"></div>
+  </div>
+</div>
+
 <div id="ytPanel" class="panel hidden">
   <div class="panelhd"><b>YouTube</b><span class="badge warn">solo reproducir (sin EQ/FX/grabar)</span><button class="btn sm" id="ytClose">✕ Volver</button></div>
   <div class="panelbody">
@@ -155,11 +173,13 @@
   </details>
   <details class="card"><summary>🛡️ Permisos y licencias</summary>
     <div id="perms" class="perms"></div>
-    <p class="muted tiny">Pads: aplausos, risas, ovación, "oooh" y "hey" son grabaciones reales CC0 de Freesound (ver <a href="assets/pads/CREDITOS.md" target="_blank">créditos</a>); el resto y las pistas demo los genera la app (autoría propia, CC0). Al cargar un WAV/FLAC propio en un pad se revisan sus metadatos buscando CC0; si no aparece, se marca "licencia sin verificar". MP3 con LAME (lamejs, LGPL).</p>
+    <p class="muted tiny">Pads: aplausos, risas, ovación, "oooh" y "hey" son grabaciones reales CC0 de Freesound (ver <a href="assets/pads/CREDITOS.md" target="_blank">créditos</a>); el resto y las pistas demo los genera la app (autoría propia, CC0). Al cargar un WAV/FLAC propio en un pad se revisan sus metadatos buscando CC0; si no aparece, se marca "licencia sin verificar".</p>
   </details>
   <details class="card"><summary>⚙️ Ajustes</summary>
     <label>Llave YouTube Data API (opcional, gratis)<input id="ytKey" type="password" placeholder="Solo si el buscador gratis falla"></label>
     <label>Curva del crossfader<select id="xfCurve"><option value="smooth">Suave (mezcla)</option><option value="cut">Corte (scratch)</option></select></label>
+    <label class="chk"><input type="checkbox" id="hdOn" checked> Calidad HD: pedir salida a 48 kHz (se aplica al volver a abrir la app)</label>
+    <p id="hdInfo" class="muted tiny"></p>
     <label class="chk"><input type="checkbox" id="normalize" checked> Volumen parejo entre canciones (normaliza a -14 LUFS)</label>
     <p class="muted tiny">Limitador maestro siempre activo: techo -1 dBFS con 5 ms de anticipación, así nada satura (ni el micro, ni los pads, ni el EQ).</p>
     <label class="chk"><input type="checkbox" id="saveCopies" checked> Guardar copia de canciones en la app (funciona sin internet)</label>
@@ -171,6 +191,6 @@
 
 <div id="sheet" class="sheet hidden"><div class="sheetbox"><b id="sheetTitle"></b><div id="sheetBtns"></div><button class="btn" id="sheetX">Cancelar</button></div></div>
 <div id="toast"></div>
-<script type="module" src="js/app.js?v=4"></script>
+<script type="module" src="js/app.js?v=6"></script>
 </body>
 </html>

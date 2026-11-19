@@ -1,6 +1,7 @@
 // Sampler de 16 pads (2 bancos de 8). Grabaciones reales CC0 (Freesound) + sonidos sintetizados en el navegador (autoría propia, CC0).
 import { idb, settings } from './store.js';
-import { readTags, licenseStatus } from './encoders.js';
+import { readTags, licenseStatus, floatTo16, encodeFLAC } from './encoders.js';
+import { integratedLoudness } from './loudness.js';
 
 const SR = 44100;
 async function render(sec, fn) { const o = new OfflineAudioContext(2, Math.ceil(SR * sec), SR); fn(o); return o.startRendering(); }
@@ -104,36 +105,54 @@ function levelPad(buf, rmsDb = -18, peakLin = 0.89) { let pk = 0, ss = 0, n = 0;
 const makePad = async i => { const b = await BUILTIN[i].make(); return BUILTIN[i].real ? b : levelPad(b); };
 // Fundido de 3 ms al final de muestras propias para que no truenen al terminar
 function fadeEdges(buf) { const n = Math.min(buf.length, Math.round(buf.sampleRate * 0.003)); for (let c = 0; c < buf.numberOfChannels; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) d[d.length - 1 - i] *= i / n; } return buf; }
-export const PAD_DEFAULT = { gain: 0.8, reverb: 0.15, delay: 0, delayTime: 0.25, low: 0, mid: 0, high: 0, choke: false };
+export const PAD_DEFAULT = { gain: 0.8, reverb: 0.15, delay: 0, delayTime: 0.25, low: 0, mid: 0, high: 0, choke: false, start: 0, end: 0, norm: 1 };
+export const PAD_COLORS = ['#ff2bd6', '#ffd23f', '#ff9f1c', '#ff3b5c', '#3d7bff', '#00e5ff', '#b04dff', '#39ff88', '#ff6b00', '#e0e0ff', '#ff2b5c', '#00ffd0', '#ffe600', '#ff4040', '#7a5cff', '#00b3ff'];
+export const MAX_PADS = 64, MAX_PAD_SEC = 60;
 
 function makeIR(ctx, sec = 2.2) { const len = Math.floor(ctx.sampleRate * sec); const b = ctx.createBuffer(2, len, ctx.sampleRate); for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); } return b; }
+
+// Nivel de pads propios: -14 LUFS (como las grabaciones CC0), pico ≤ -1 dBFS; si el sonido es muy corto para medir LUFS, usa RMS
+function padNorm(buf, start, end) {
+  const sr = buf.sampleRate, a = Math.floor(start * sr), b = Math.min(buf.length, end > start ? Math.floor(end * sr) : buf.length);
+  const ch = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) ch.push(buf.getChannelData(c).subarray(a, b));
+  let pk = 0, ss = 0; for (const d of ch) for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > pk) pk = v; ss += v * v; }
+  if (!pk) return 1; let lufs = -Infinity; try { if (b - a > sr * 0.5) lufs = integratedLoudness(ch, sr).lufs; } catch (e) {}
+  const lv = isFinite(lufs) ? lufs : 20 * Math.log10(Math.sqrt(ss / (ch.length * (b - a))) + 1e-9) + 1;
+  return Math.min(Math.pow(10, (-14 - lv) / 20), 0.89 / pk, 16);
+}
+const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const KEEP = ['uid', 'src', 'name', 'emoji', 'color', 'gain', 'reverb', 'delay', 'delayTime', 'low', 'mid', 'high', 'choke', 'start', 'end', 'norm', 'license'];
+function defaults() { return BUILTIN.map((b, i) => ({ uid: b.id, src: 'builtin:' + b.id, name: b.name, emoji: b.emoji, color: PAD_COLORS[i % 16], license: 'cc0', ...PAD_DEFAULT, reverb: b.reverb ?? PAD_DEFAULT.reverb })); }
 
 export class Sampler {
   constructor(eng) {
     this.eng = eng; const c = eng.ctx;
-    this.bus = c.createGain(); this.bus.gain.value = 0.9; this.bus.connect(eng.masterIn);
+    this.bus = c.createGain(); this.bus.gain.value = 0.9; this.bus.connect(eng.masterIn); // → EQ maestro → limitador
     this.rev = c.createConvolver(); this.rev.buffer = makeIR(c); this.revRet = c.createGain(); this.revRet.gain.value = 0.8; this.rev.connect(this.revRet).connect(this.bus);
-    this.pads = [];
-    const cfg = settings.get('pads16', null) || settings.get('pads', []).map(c => (c && c.custom ? c : null));
-    for (let i = 0; i < NPADS; i++) {
-      const p = { i, ...PAD_DEFAULT, reverb: BUILTIN[i].reverb ?? PAD_DEFAULT.reverb, ...(cfg[i] || {}), buffer: null, src: null, name: BUILTIN[i].name, emoji: BUILTIN[i].emoji, license: 'cc0', custom: !!(cfg[i] && cfg[i].custom) };
-      p.g = c.createGain(); p.lo = c.createBiquadFilter(); p.lo.type = 'lowshelf'; p.lo.frequency.value = 250; p.mi = c.createBiquadFilter(); p.mi.type = 'peaking'; p.mi.frequency.value = 1200; p.hi = c.createBiquadFilter(); p.hi.type = 'highshelf'; p.hi.frequency.value = 4000;
-      p.rs = c.createGain(); p.ds = c.createGain(); p.d = c.createDelay(2); p.dfb = c.createGain(); p.dfb.gain.value = 0.4;
-      p.g.connect(p.lo).connect(p.mi).connect(p.hi); p.hi.connect(this.bus); p.hi.connect(p.rs).connect(this.rev); p.hi.connect(p.ds).connect(p.d); p.d.connect(p.dfb).connect(p.d); p.d.connect(this.bus);
-      this.pads.push(p); this.apply(i);
+    let cfg = settings.get('padsV3', null);
+    if (!cfg) { // migración: pads propios de versiones anteriores
+      cfg = defaults(); const old = settings.get('pads16', null) || settings.get('pads', []);
+      (old || []).forEach((o, i) => { if (o && cfg[i]) { Object.assign(cfg[i], { gain: o.gain ?? cfg[i].gain, reverb: o.reverb ?? cfg[i].reverb, delay: o.delay || 0, delayTime: o.delayTime || 0.25, low: o.low || 0, mid: o.mid || 0, high: o.high || 0, choke: !!o.choke }); if (o.custom) Object.assign(cfg[i], { src: 'legacy:pad' + i, name: o.name || 'Muestra', emoji: '🎵', license: o.license || 'desconocida' }); } });
     }
+    this.pads = cfg.map(p => this._nodes({ ...PAD_DEFAULT, ...p }));
   }
-  apply(i) { const p = this.pads[i], t = this.eng.t(); p.g.gain.setTargetAtTime(p.gain, t, 0.01); p.rs.gain.setTargetAtTime(p.reverb, t, 0.01); p.ds.gain.setTargetAtTime(p.delay, t, 0.01); p.d.delayTime.setTargetAtTime(p.delayTime, t, 0.01); p.lo.gain.setTargetAtTime(p.low, t, 0.01); p.mi.gain.setTargetAtTime(p.mid, t, 0.01); p.hi.gain.setTargetAtTime(p.high, t, 0.01); }
-  save() { settings.set('pads16', this.pads.map(p => ({ gain: p.gain, reverb: p.reverb, delay: p.delay, delayTime: p.delayTime, low: p.low, mid: p.mid, high: p.high, choke: p.choke, custom: p.custom, name: p.custom ? p.name : undefined, license: p.license }))); }
+  _nodes(p) {
+    const c = this.eng.ctx; p.buffer = p.buffer || null; p.voices = new Set();
+    p.g = c.createGain(); p.lo = c.createBiquadFilter(); p.lo.type = 'lowshelf'; p.lo.frequency.value = 250; p.mi = c.createBiquadFilter(); p.mi.type = 'peaking'; p.mi.frequency.value = 1200; p.hi = c.createBiquadFilter(); p.hi.type = 'highshelf'; p.hi.frequency.value = 4000;
+    p.rs = c.createGain(); p.ds = c.createGain(); p.d = c.createDelay(2); p.dfb = c.createGain(); p.dfb.gain.value = 0.4;
+    p.g.connect(p.lo).connect(p.mi).connect(p.hi); p.hi.connect(this.bus); p.hi.connect(p.rs).connect(this.rev); p.hi.connect(p.ds).connect(p.d); p.d.connect(p.dfb).connect(p.d); p.d.connect(this.bus);
+    this._apply(p); return p;
+  }
+  _apply(p) { const t = this.eng.t(); p.g.gain.setTargetAtTime(p.gain * (p.norm || 1), t, 0.01); p.rs.gain.setTargetAtTime(p.reverb, t, 0.01); p.ds.gain.setTargetAtTime(p.delay, t, 0.01); p.d.delayTime.setTargetAtTime(p.delayTime, t, 0.01); p.lo.gain.setTargetAtTime(p.low, t, 0.01); p.mi.gain.setTargetAtTime(p.mid, t, 0.01); p.hi.gain.setTargetAtTime(p.high, t, 0.01); }
+  apply(i) { const p = typeof i === "object" ? i : this.pads[i]; if (p) this._apply(p); }
+  save() { settings.set('padsV3', this.pads.map(p => Object.fromEntries(KEEP.map(k => [k, p[k]])))); }
+  async _load(p) {
+    if (p.src.startsWith('builtin:')) { const i = BUILTIN.findIndex(b => 'builtin:' + b.id === p.src); if (i >= 0) { p.buffer = await makePad(i); return; } }
+    const key = p.src.startsWith('legacy:') ? p.src.slice(7) : p.src.slice(5); const blob = await idb.get('blobs', key);
+    if (!blob) throw new Error('falta el audio del pad'); p.buffer = await this.decodeRetry(blob);
+  }
   async init(onProgress) {
-    for (let i = 0; i < NPADS; i++) {
-      const p = this.pads[i];
-      if (p.custom) {
-        try { const blob = await idb.get('blobs', 'pad' + i); if (blob) { p.buffer = await this.decodeRetry(blob); const c = (settings.get('pads16', null) || settings.get('pads', []))[i] || {}; p.name = c.name || 'Muestra'; p.emoji = '🎵'; p.license = c.license || 'desconocida'; onProgress && onProgress(i); continue; } } catch (e) { console.warn('pad custom', e); }
-        p.custom = false;
-      }
-      p.buffer = await makePad(i); onProgress && onProgress(i);
-    }
+    for (let i = 0; i < this.pads.length; i++) { const p = this.pads[i]; try { await this._load(p); } catch (e) { console.warn('pad', p.name, e); p.err = e.message; } onProgress && onProgress(i); }
   }
   async decodeRetry(blob, tries = 3) {
     let last;
@@ -143,26 +162,52 @@ export class Sampler {
     }
     throw last || new Error('no se pudo decodificar');
   }
-  async loadCustom(i, file) {
-    const tags = await readTags(file);
-    const buffer = await this.decodeRetry(file, 3);
-    const p = this.pads[i]; p.buffer = buffer; p.custom = true; p.name = (tags.title || file.name.replace(/\.[^.]+$/, '')).slice(0, 18); p.emoji = '🎵'; p.license = licenseStatus(tags);
-    await idb.put('blobs', file, 'pad' + i); this.save();
-    return { license: p.license, tags };
+  // Audio (o el audio de un video) → FLAC sin pérdida guardado en IndexedDB; máx. 60 s
+  async _store(file) {
+    let buf = await this.decodeRetry(file, 3); let cut = false;
+    if (buf.duration > MAX_PAD_SEC) { const n = Math.floor(MAX_PAD_SEC * buf.sampleRate); const o = new AudioBuffer({ length: n, numberOfChannels: Math.min(2, buf.numberOfChannels), sampleRate: buf.sampleRate }); for (let c = 0; c < o.numberOfChannels; c++) o.copyToChannel(buf.getChannelData(c).subarray(0, n), c); buf = fadeEdges(o); cut = true; }
+    const L = floatTo16(buf.getChannelData(0)), R = floatTo16(buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0));
+    const key = 'padblob-' + uid(); await idb.put('blobs', encodeFLAC([L, R], buf.sampleRate, { title: file.name }), key);
+    return { buf, key, cut };
   }
-  async resetPad(i) { const p = this.pads[i]; p.custom = false; p.name = BUILTIN[i].name; p.emoji = BUILTIN[i].emoji; p.license = 'cc0'; p.buffer = await makePad(i); await idb.del('blobs', 'pad' + i); this.save(); }
-  stopAll() { // corta todos los pads con fundido de 15 ms (sin clic)
-    const t = this.eng.t(); for (const p of this.pads) for (const v of p.voices || []) { try { v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t); v.g.gain.linearRampToValueAtTime(0, t + 0.015); v.s.stop(t + 0.02); } catch (e) {} }
+  async addFromFile(file) {
+    if (this.pads.length >= MAX_PADS) throw new Error('máximo ' + MAX_PADS + ' pads');
+    const tags = /^video\//.test(file.type) ? {} : await readTags(file).catch(() => ({}));
+    const { buf, key, cut } = await this._store(file);
+    const i = this.pads.length;
+    const p = this._nodes({ ...PAD_DEFAULT, uid: uid(), src: 'blob:' + key, name: (tags.title || file.name.replace(/\.[^.]+$/, '')).slice(0, 22), emoji: /^video\//.test(file.type) ? '🎬' : '🎵', color: PAD_COLORS[i % 16], license: licenseStatus(tags), reverb: 0, buffer: buf });
+    p.norm = padNorm(buf, 0, 0); this._apply(p); this.pads.push(p); this.save(); return { pad: p, cut };
   }
+  async loadCustom(i, file) { // reemplaza el sonido de un pad existente
+    const tags = /^video\//.test(file.type) ? {} : await readTags(file).catch(() => ({}));
+    const { buf, key } = await this._store(file); const p = this.pads[i]; await this._dropBlob(p);
+    Object.assign(p, { buffer: buf, src: 'blob:' + key, name: (tags.title || file.name.replace(/\.[^.]+$/, '')).slice(0, 22), emoji: '🎵', license: licenseStatus(tags), start: 0, end: 0 });
+    p.norm = padNorm(buf, 0, 0); this._apply(p); this.save(); return { license: p.license, tags };
+  }
+  async _dropBlob(p) { if (p.src.startsWith('blob:')) await idb.del('blobs', p.src.slice(5)); else if (p.src.startsWith('legacy:')) await idb.del('blobs', p.src.slice(7)); }
+  async remove(i) { const p = this.pads[i]; this._silence(p); await this._dropBlob(p); setTimeout(() => { try { p.g.disconnect(); p.hi.disconnect(); p.d.disconnect(); } catch (e) {} }, 100); this.pads.splice(i, 1); this.save(); }
+  move(i, dir) { const j = i + dir; if (j < 0 || j >= this.pads.length) return false; [this.pads[i], this.pads[j]] = [this.pads[j], this.pads[i]]; this.save(); return true; }
+  setTrim(i, start, end) { const p = this.pads[i]; if (!p.buffer) return; p.start = Math.max(0, Math.min(start, p.buffer.duration - 0.02)); p.end = end > p.start + 0.02 && end < p.buffer.duration ? end : 0; if (!p.src.startsWith('builtin:')) p.norm = padNorm(p.buffer, p.start, p.end); this._apply(p); this.save(); }
+  async resetPad(i) { // vuelve al sonido de fábrica (si el pad es de fábrica)
+    const p = this.pads[i], b = BUILTIN.find(x => x.id === p.uid); if (!b) return false;
+    await this._dropBlob(p); Object.assign(p, { src: 'builtin:' + b.id, name: b.name, emoji: b.emoji, license: 'cc0', start: 0, end: 0, norm: 1 }); await this._load(p); this._apply(p); this.save(); return true;
+  }
+  async resetAll() {
+    this.stopAll(); for (const p of this.pads) { await this._dropBlob(p); try { p.g.disconnect(); p.hi.disconnect(); p.d.disconnect(); } catch (e) {} }
+    this.pads = defaults().map(p => this._nodes(p)); this.save(); await this.init();
+  }
+  _silence(p) { const t = this.eng.t(); for (const v of p.voices) { try { v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t); v.g.gain.linearRampToValueAtTime(0, t + 0.015); v.s.stop(t + 0.02); } catch (e) {} } }
+  stopAll() { for (const p of this.pads) this._silence(p); } // fundido de 15 ms (sin clic)
   trigger(i, vel = 1) {
-    const p = this.pads[i]; if (!p.buffer) return false;
+    const p = this.pads[i]; if (!p || !p.buffer) return false;
     this.eng.resume();
     const c = this.eng.ctx, t = this.eng.t();
-    // choke con fundido de 6 ms (sin clic) en vez de cortar en seco
-    if (p.choke && p.src) { const o = p.src, og = p.vg; og.gain.cancelScheduledValues(t); og.gain.setValueAtTime(og.gain.value, t); og.gain.linearRampToValueAtTime(0, t + 0.006); try { o.stop(t + 0.01); } catch (e) {} }
+    if (p.choke && p.src_) { const og = p.vg; og.gain.cancelScheduledValues(t); og.gain.setValueAtTime(og.gain.value, t); og.gain.linearRampToValueAtTime(0, t + 0.006); try { p.src_.stop(t + 0.01); } catch (e) {} }
     const s = c.createBufferSource(); s.buffer = p.buffer; const vg = c.createGain(); vg.gain.value = 0;
+    const st = p.start || 0, en = p.end > st ? p.end : p.buffer.duration, dur = en - st;
     vg.gain.setValueAtTime(0, t); vg.gain.linearRampToValueAtTime(vel, t + 0.002); // ataque de 2 ms
-    s.connect(vg).connect(p.g); s.start(t); p.src = s; p.vg = vg; const voice = { s, g: vg }; (p.voices ||= new Set()).add(voice); s.onended = () => { vg.disconnect(); p.voices.delete(voice); if (p.src === s) p.src = null; };
+    if (p.end > st) { vg.gain.setValueAtTime(vel, t + Math.max(0.003, dur - 0.006)); vg.gain.linearRampToValueAtTime(0, t + dur); } // fundido de 6 ms en el recorte final
+    s.connect(vg).connect(p.g); s.start(t, st, dur + 0.01); p.src_ = s; p.vg = vg; const voice = { s, g: vg }; p.voices.add(voice); s.onended = () => { vg.disconnect(); p.voices.delete(voice); if (p.src_ === s) p.src_ = null; };
     return true;
   }
 }

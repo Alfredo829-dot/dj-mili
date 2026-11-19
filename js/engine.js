@@ -1,5 +1,5 @@
-// Motor de audio: 2 decks, mixer, EQ maestro 10 bandas, filtro DJM, FX, micrófono y grabador.
-import { floatTo16 } from './encoders.js';
+// Motor de audio: 2 decks, mixer, EQ maestro 10 bandas, envolvente opcional, filtro DJM, FX, micrófono y limitador.
+import { Widener } from './widener.js';
 
 export const EQ_DEFAULT = [
   { f: 31, g: 0, q: 0.7, t: 'lowshelf' }, { f: 62, g: 0, q: 1.0, t: 'peaking' }, { f: 125, g: 0, q: 1.0, t: 'peaking' },
@@ -8,9 +8,10 @@ export const EQ_DEFAULT = [
   { f: 16000, g: 0, q: 0.7, t: 'highshelf' }];
 
 export class Engine {
-  constructor() {
+  constructor(opts = {}) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new AC({ latencyHint: 'interactive' });
+    // Calidad HD: pide 48 kHz (proceso en float de 32 bits); si el equipo no lo acepta, usa su frecuencia nativa
+    try { this.ctx = new AC(opts.hd ? { latencyHint: 'interactive', sampleRate: 48000 } : { latencyHint: 'interactive' }); } catch (e) { this.ctx = new AC({ latencyHint: 'interactive' }); }
     const c = this.ctx;
     this.masterIn = c.createGain();
     this.eq = EQ_DEFAULT.map(b => { const f = c.createBiquadFilter(); f.type = b.t; f.frequency.value = b.f; f.gain.value = b.g; f.Q.value = b.q; return f; });
@@ -19,19 +20,18 @@ export class Engine {
     this.masterIn.connect(this.preEq);
     this.preEq.connect(this.eq[0]); for (let i = 0; i < 9; i++) this.eq[i].connect(this.eq[i + 1]); this.eq[9].connect(this.postEq);
     this.master = c.createGain(); this.master.gain.value = 1;
-    this.postEq.connect(this.master);
-    this.out = c.createGain(); // salida ya limitada: altavoz, medidor y grabador
+    this.wide = new Widener(c); this.postEq.connect(this.wide.input); this.wide.output.connect(this.master); // transparente si está apagado
+    this.out = c.createGain(); // salida ya limitada: altavoz y medidor
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 1024; this.analyser.smoothingTimeConstant = 0.6;
     this.out.connect(this.analyser); this.out.connect(c.destination);
     this.gr = 0; this.overs = 0;
     this.decks = [new Deck(this, 0), new Deck(this, 1)];
     this.xf = 0.5; this.xfCurve = 'smooth'; this.setCrossfader(0.5);
     this.mic = null; this.duckOn = true;
-    this.rec = null;
   }
   async init() {
     const c = this.ctx;
-    await c.audioWorklet.addModule(new URL('./worklets.js?v=2', import.meta.url));
+    await c.audioWorklet.addModule(new URL('./worklets.js?v=3', import.meta.url));
     this.limiter = new AudioWorkletNode(c, 'djm-limiter', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', processorOptions: { ceilingDb: -1, lookahead: 0.005, release: 0.12 } });
     this.limiter.port.onmessage = e => { this.gr = e.data.gr; this.overs = e.data.over; };
     this.master.connect(this.limiter).connect(this.out);
@@ -77,33 +77,6 @@ export class Engine {
   micOff() { if (!this.mic) return; this.mic.stream.getTracks().forEach(t => t.stop()); try { this.mic.src.disconnect(); this.mic.g.disconnect(); this.mic.wet.disconnect(); } catch (e) {} this.mic = null; this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(1, this.t(), 0.1)); }
 
   // ---------- Grabador (AudioWorklet, PCM sin pérdida) ----------
-  compressedType() {
-    if (!window.MediaRecorder) return null;
-    for (const [type, ext] of [['audio/mp4;codecs=mp4a.40.2', 'm4a'], ['audio/webm;codecs=opus', 'webm'], ['audio/webm', 'webm']]) if (MediaRecorder.isTypeSupported(type)) return { type, ext };
-    return null;
-  }
-  async recStart(opts = {}) {
-    if (this.rec) return;
-    const c = this.ctx;
-    const rec = { L: [], R: [], frames: 0, started: Date.now() };
-    const onData = (l, r) => { rec.L.push(floatTo16(l)); rec.R.push(floatTo16(r)); rec.frames += l.length; };
-    const node = new AudioWorkletNode(c, 'djm-rec', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 2, channelCountMode: 'explicit' });
-    node.port.onmessage = e => onData(e.data[0], e.data[1]);
-    this.out.connect(node); rec.node = node;
-    const ct = opts.compressed && this.compressedType();
-    if (ct) { const dst = this.ctx.createMediaStreamDestination(); this.out.connect(dst); const mr = new MediaRecorder(dst.stream, { mimeType: ct.type, audioBitsPerSecond: 256000 }); const chunks = []; mr.ondataavailable = e => e.data.size && chunks.push(e.data); mr.start(1000); rec.mr = { mr, chunks, dst, ct }; }
-    this.rec = rec;
-  }
-  async recStop() {
-    const rec = this.rec; if (!rec) return null;
-    if (rec.node.port) { rec.node.port.postMessage('stop'); await new Promise(r => setTimeout(r, 150)); }
-    try { this.out.disconnect(rec.node); } catch (e) {} try { rec.node.disconnect(); } catch (e) {}
-    if (rec.mr) { const m = rec.mr; await new Promise(res => { m.mr.onstop = res; m.mr.stop(); }); try { this.out.disconnect(m.dst); } catch (e) {} rec.compressed = { blob: new Blob(m.chunks, { type: m.ct.type.split(';')[0] }), ext: m.ct.ext, type: m.ct.type.replace(/;.*/, '') + ' 256 kbps' }; }
-    this.rec = null;
-    const join = arr => { const o = new Int16Array(rec.frames); let p = 0; for (const a of arr) { o.set(a.subarray(0, Math.min(a.length, rec.frames - p)), p); p += a.length; } return o; };
-    return { L: join(rec.L), R: join(rec.R), sampleRate: this.ctx.sampleRate, seconds: rec.frames / this.ctx.sampleRate, started: rec.started, compressed: rec.compressed };
-  }
-  recSeconds() { return this.rec ? this.rec.frames / this.ctx.sampleRate : 0; }
 }
 
 // ------------------------------------------------------------------
