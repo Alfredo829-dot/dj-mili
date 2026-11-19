@@ -7,8 +7,9 @@ import { idb, settings, audit, auditAll, onAudit, cachePurge, auditTrim } from '
 import { Midi } from './midi.js';
 import { searchYouTube, parseYouTubeId } from './search.js';
 import { makeDemo } from './demo.js';
+import { integratedLoudness, normGainDb, TARGET_LUFS } from './loudness.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (html) e.innerHTML = html; return e; };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +45,7 @@ async function boot() {
 async function start() {
   $('#startMsg').textContent = 'Preparando audio…';
   try {
-    eng = new Engine(); await eng.resume();
+    eng = new Engine(); await eng.init(); await eng.resume();
     window.__djm.eng = eng;
     sampler = new Sampler(eng); window.__djm.sampler = sampler;
     buildDecks(); buildPads(); buildEQ(); bindUI();
@@ -99,9 +100,15 @@ async function decodeTrack(tr) {
   let last; for (let k = 0; k < 3; k++) { try { return await eng.ctx.decodeAudioData(await blob.arrayBuffer()); } catch (e) { last = e; await new Promise(r => setTimeout(r, 250 * (k + 1))); } }
   throw new Error('No se pudo leer el audio (' + (last?.message || 'formato') + ')');
 }
+function measureLoudness(tr, buf) {
+  const ch = [buf.getChannelData(0)]; if (buf.numberOfChannels > 1) ch.push(buf.getChannelData(1));
+  const r = integratedLoudness(ch, buf.sampleRate); tr.lufs = Math.round(r.lufs * 10) / 10; tr.peakDb = Math.round(r.peak * 10) / 10; return tr;
+}
+const normOn = () => settings.get('normalize', true);
+const trackNorm = tr => normOn() ? normGainDb(tr.lufs, tr.peakDb) : 0;
 let analyzing = false;
 async function analyzeTrack(tr, buf) {
-  const b = await detectBPM(buf); const k = await detectKey(buf);
+  const b = await detectBPM(buf); const k = await detectKey(buf); measureLoudness(tr, buf);
   tr.dur = buf.duration; tr.bpm = b.bpm || tr.tagBpm || 0; tr.offset = b.offset; tr.bpmConf = b.confidence;
   if (k) { tr.key = k.name; tr.camelot = k.camelot; }
   tr.analyzed = true; await idb.put('tracks', tr); return tr;
@@ -128,7 +135,7 @@ function renderLib() {
   for (const t of list) {
     const comp = pk && pk.cam && t.camelot ? camelotCompatible(pk.cam, t.camelot) : null;
     const col = comp === 'perfecta' || (comp && comp.startsWith('compatible')) ? 'var(--g)' : comp === 'energía (+2)' ? 'var(--y)' : comp ? 'var(--r)' : 'var(--line)';
-    const it = el('div', { class: 'it' }, `<div class="t"><b>${esc(t.title)}</b><small><span class="dot" style="background:${col}"></span>${esc(t.artist || '')} · ${t.analyzed ? (t.bpm ? t.bpm.toFixed(1) + ' BPM' : '? BPM') : '…'} · ${esc(t.camelot ? t.camelot + ' ' + t.key : '')} · ${fmt(t.dur)}${t.stored ? '' : ' · sesión'}${t.err ? ' · ⚠️' : ''}</small></div>`);
+    const it = el('div', { class: 'it' }, `<div class="t"><b>${esc(t.title)}</b><small><span class="dot" style="background:${col}"></span>${esc(t.artist || '')} · ${t.analyzed ? (t.bpm ? t.bpm.toFixed(1) + ' BPM' : '? BPM') : '…'} · ${esc(t.camelot ? t.camelot + ' ' + t.key : '')} · ${fmt(t.dur)}${t.lufs !== undefined ? ' · ' + t.lufs + ' LUFS' : ''}${t.stored ? '' : ' · sesión'}${t.err ? ' · ⚠️' : ''}</small></div>`);
     const bA = el('button', { class: 'btn a' }, 'A'), bB = el('button', { class: 'btn b' }, 'B'), bQ = el('button', { class: 'btn' }, '+Cola'), bM = el('button', { class: 'btn' }, '⋮');
     bA.onclick = () => loadToDeck(0, t); bB.onclick = () => loadToDeck(1, t); bQ.onclick = () => { queue.push(t.id); saveQueue(); toast('En cola: ' + t.title); };
     bM.onclick = () => trackMenu(t);
@@ -150,7 +157,8 @@ async function loadToDeck(i, tr) {
   try {
     const buf = await decodeTrack(tr);
     if (!tr.analyzed || !tr.bpm) await analyzeTrack(tr, buf);
-    d.load(buf, tr, { bpm: tr.bpm, offset: tr.offset, key: tr.camelot, cues: tr.cues });
+    if (tr.lufs === undefined) { measureLoudness(tr, buf); idb.put('tracks', tr); }
+    d.load(buf, tr, { bpm: tr.bpm, offset: tr.offset, key: tr.camelot, cues: tr.cues, normDb: trackNorm(tr) });
     d.setRate(1); deckUI[i].render(); deckUI[i].drawOverview(); updateHarm();
     audit('cargar deck ' + 'AB'[i], 'ok', tr.title);
     if (curTab !== 'mix') showTab('mix');
@@ -202,11 +210,12 @@ function buildDecks() {
     root.innerHTML = `
       <div class="hd"><span class="letter">${L}</span><span class="title">Sin canción · toca 🎵 Música</span><span class="badge bpm">— BPM</span><span class="badge key">—</span></div>
       <canvas class="zoom"></canvas><canvas class="ovw"></canvas>
-      <div class="info"><span><b class="el">0:00</b> / <span class="rm">-0:00</span></span><span class="loopinfo"></span><span class="rt">0.0%</span></div>
+      <div class="info"><span><b class="el">0:00</b> / <span class="rm">-0:00</span></span><span class="loopinfo"></span><span class="ng"></span><span class="rt">0.0%</span></div>
       <div class="ctl">
         <button class="btn cue" data-midi="${p}-cue">CUE</button>
         <button class="btn play" data-midi="${p}-play">▶</button>
         <button class="btn sync" data-midi="${p}-sync">SYNC</button>
+        <button class="btn kl on" data-midi="${p}-keylock" title="Key lock: el tono no cambia al mover el tempo">🔒</button>
         <div class="tempo"><input type="range" class="tmp" min="-1" max="1" step="0.001" value="0" data-midi="${p}-tempo"><span class="trng">Tempo ±8% · doble toque = 0</span></div>
       </div>
       <div class="hot">${[...Array(8)].map((_, k) => `<button class="btn hc" style="--hc:${HC[k]}" data-k="${k}" data-midi="${p}-hc${k}">${k + 1}</button>`).join('')}</div>
@@ -244,6 +253,8 @@ function buildDecks() {
       root.querySelectorAll('.lp').forEach(b => b.classList.toggle('on', !!d.loop && d.loop.beats == b.dataset.b));
       q('.del').classList.toggle('on', ui.delMode);
       q('.loopinfo').textContent = d.loop ? '⟲ ' + d.loop.beats + ' beats' : '';
+      q('.kl').classList.toggle('on', d.keylock);
+      q('.ng').textContent = t && t.lufs !== undefined ? (d.normDb ? `Vol ${d.normDb > 0 ? '+' : ''}${d.normDb.toFixed(1)} dB` : `${t.lufs} LUFS`) : '';
     };
     ui.drawOverview = () => {
       const w = d.wave; const cw = ovw.clientWidth * devicePixelRatio, ch = ovw.clientHeight * devicePixelRatio; ovw.width = cw; ovw.height = ch;
@@ -275,14 +286,16 @@ function buildDecks() {
     q('.play').onclick = () => { if (!d.buffer) return toast('Carga una canción primero'); const on = d.toggle(); audit((on ? 'play' : 'pausa') + ' deck ' + L, 'ok', d.track?.title); ui.render(); updateHarm(); };
     q('.cue').onclick = () => { if (!d.buffer) return; d.cue(); ui.render(); audit('cue deck ' + L, 'ok', fmt(d.cuePoint)); };
     q('.sync').onclick = () => { const ok = d.sync(eng.decks[1 - i]); q('.sync').classList.toggle('on', ok); setTimeout(() => q('.sync').classList.remove('on'), 600); q('.tmp').value = (d.rate - 1) / ui.range; ui.render(); audit('sync deck ' + L, ok ? 'ok' : 'error', ok ? d.effBpm.toFixed(1) + ' BPM' : 'falta BPM'); if (!ok) toast('Faltan BPM en algún deck'); };
+    q('.kl').onclick = () => { d.setKeylock(!d.keylock); settings.set('keylock' + i, d.keylock); ui.render(); toast(d.keylock ? 'Key lock: el tono se mantiene al cambiar tempo' : 'Key lock apagado: el tempo cambia el tono (como vinil)'); audit('key lock deck ' + L, 'ok', d.keylock ? 'on' : 'off'); };
+    d.setKeylock(settings.get('keylock' + i, true));
     const tmp = q('.tmp'); tmp.oninput = () => { d.setRate(1 + tmp.value * ui.range); ui.render(); };
     tmp.ondblclick = () => { tmp.value = 0; tmp.oninput(); };
     q('.trng').onclick = () => { ui.range = ui.range === 0.08 ? 0.16 : ui.range === 0.16 ? 0.5 : 0.08; q('.trng').textContent = 'Tempo ±' + Math.round(ui.range * 100) + '% · toca para cambiar'; tmp.oninput(); };
     root.querySelectorAll('.hc').forEach(b => b.onclick = () => { if (!d.buffer) return; const k = +b.dataset.k; const r = d.hotcue(k, ui.delMode ? 'del' : 'go'); ui.render(); audit('hot cue ' + (k + 1) + ' deck ' + L, 'ok', r); if (d.track) { d.track.cues = d.cues.slice(); idb.put('tracks', d.track); } });
     q('.del').onclick = () => { ui.delMode = !ui.delMode; ui.render(); if (ui.delMode) toast('Toca un hot cue para borrarlo'); };
     root.querySelectorAll('.lp').forEach(b => b.onclick = () => { if (!d.buffer) return; const r = d.setLoop(+b.dataset.b); ui.render(); audit('loop ' + b.dataset.b + ' beats deck ' + L, 'ok', r ? 'activado' : 'salida'); });
-    q('.vol').oninput = e => d.vol.gain.setTargetAtTime(+e.target.value, eng.ctx.currentTime, 0.01);
-    q('.trim').oninput = e => d.trim.gain.setTargetAtTime(+e.target.value, eng.ctx.currentTime, 0.01);
+    q('.vol').oninput = e => d.vol.gain.setTargetAtTime(+e.target.value, eng.t(), 0.01);
+    q('.trim').oninput = e => d.trim.gain.setTargetAtTime(+e.target.value, eng.t(), 0.01);
     q('.flt').oninput = e => d.setFilter(+e.target.value); q('.flt').ondblclick = e => { e.target.value = 0; d.setFilter(0); };
     q('.eqh').oninput = e => d.setEQ3('high', +e.target.value); q('.eqm').oninput = e => d.setEQ3('mid', +e.target.value); q('.eql').oninput = e => d.setEQ3('low', +e.target.value);
     q('.fx').onchange = e => { d.setFX(e.target.value, +q('.fxw').value, ui.echoBeats); audit('FX deck ' + L, 'ok', e.target.value); };
@@ -325,7 +338,7 @@ async function automixTick() {
   if ((!b.track || b._used) && !preloading) {
     const nx = pickNext(); if (!nx) { $('#mixMsg').textContent = 'Auto‑mix: no hay siguiente canción'; return; }
     preloading = true; $('#mixMsg').textContent = 'Auto‑mix: preparando ' + nx.title + ' en ' + 'AB'[bi];
-    try { const buf = await decodeTrack(nx); if (!nx.analyzed || !nx.bpm) await analyzeTrack(nx, buf); b.load(buf, nx, { bpm: nx.bpm, offset: nx.offset, key: nx.camelot, cues: nx.cues }); b._used = false; deckUI[bi].render(); deckUI[bi].drawOverview(); updateHarm(); }
+    try { const buf = await decodeTrack(nx); if (!nx.analyzed || !nx.bpm) await analyzeTrack(nx, buf); if (nx.lufs === undefined) measureLoudness(nx, buf); b.load(buf, nx, { bpm: nx.bpm, offset: nx.offset, key: nx.camelot, cues: nx.cues, normDb: trackNorm(nx) }); b._used = false; deckUI[bi].render(); deckUI[bi].drawOverview(); updateHarm(); }
     catch (e) { audit('automix cargar', 'error', e.message); }
     preloading = false; return;
   }
@@ -597,7 +610,7 @@ function bindUI() {
   $('#eqDel').onclick = () => { const v = $('#eqPreset').value; if (!v.startsWith('u:')) return toast('Elige un preset tuyo (★)'); const u = settings.get('eqPresets', {}); delete u[v.slice(2)]; settings.set('eqPresets', u); presetList(); };
   $('#eqFlat').onclick = () => applyPreset('b:Plano');
   $('#recBtn').onclick = toggleRec;
-  $('#padVol').value = settings.get('padVol', 0.9); sampler.bus.gain.value = +$('#padVol').value; $('#padVol').oninput = e => { sampler.bus.gain.setTargetAtTime(+e.target.value, eng.ctx.currentTime, 0.01); settings.set('padVol', +e.target.value); };
+  $('#padVol').value = settings.get('padVol', 0.9); sampler.bus.gain.value = +$('#padVol').value; $('#padVol').oninput = e => { sampler.bus.gain.setTargetAtTime(+e.target.value, eng.t(), 0.01); settings.set('padVol', +e.target.value); };
   $('#partyBtn').onclick = () => party(true); $('#partyX').onclick = () => party(false);
   // micro
   $('#micBtn').onclick = async () => {
@@ -625,7 +638,7 @@ function bindUI() {
   // ajustes
   $('#ytKey').value = settings.get('ytkey', ''); $('#ytKey').onchange = e => settings.set('ytkey', e.target.value.trim());
   $('#xfCurve').value = settings.get('xfCurve', 'smooth'); eng.xfCurve = $('#xfCurve').value; $('#xfCurve').onchange = e => { eng.xfCurve = e.target.value; settings.set('xfCurve', eng.xfCurve); eng.setCrossfader(eng.xf); };
-  $('#limiter').checked = settings.get('limiter', true); eng.setLimiter($('#limiter').checked); $('#limiter').onchange = e => { settings.set('limiter', e.target.checked); eng.setLimiter(e.target.checked); };
+  $('#normalize').checked = normOn(); $('#normalize').onchange = e => { settings.set('normalize', e.target.checked); eng.decks.forEach((d, i) => { if (d.track) { d.setNorm(trackNorm(d.track)); deckUI[i].render(); } }); audit('volumen parejo ' + (e.target.checked ? 'on' : 'off'), 'ok'); };
   $('#saveCopies').checked = settings.get('saveCopies', true); $('#saveCopies').onchange = e => settings.set('saveCopies', e.target.checked);
   $('#cacheClr').onclick = async () => { await idb.clear('cache'); toast('Caché limpia'); };
   $('#demoBtn').onclick = async () => { for (const t of tracks.filter(t => t.demo)) { await idb.del('tracks', t.id); } tracks = tracks.filter(t => !t.demo); await createDemos(); renderLib(); analyzePending(); };
@@ -638,7 +651,8 @@ function loop(t) {
   requestAnimationFrame(loop);
   if (t - lastF < 30) return; lastF = t;
   const lv = eng.level(); $('#meter i').style.width = Math.min(100, lv * 110) + '%';
+  const gr = eng.gr || 0; const gb = $('#grBadge'); gb.textContent = gr < -0.1 ? 'LIM ' + gr.toFixed(1) : 'LIM'; gb.classList.toggle('act', gr < -0.1);
   if (curTab === 'mix' && !partyOn) deckUI.forEach(u => u.draw());
 }
-window.__djm.api = { loadToDeck: (i, id) => loadToDeck(i, tracks.find(t => t.id === id)), tracks: () => tracks, firePad, toggleRec, showTab, applyPreset, deckUI };
+window.__djm.api = { measureLoudness, trackNorm, loadToDeck: (i, id) => loadToDeck(i, tracks.find(t => t.id === id)), tracks: () => tracks, firePad, toggleRec, showTab, applyPreset, deckUI };
 boot();

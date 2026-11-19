@@ -1,9 +1,13 @@
 // Codificadores WAV (PCM 16 bits + LIST/INFO) y FLAC (16 bits, predictor fijo + Rice) en JS puro.
 const te = new TextEncoder();
 
-export function floatTo16(f32) {
+// Float -> 16 bits con redondeo y dither TPDF (±1 LSB) para no generar distorsión de cuantización
+export function floatTo16(f32, dither = true) {
   const o = new Int16Array(f32.length);
-  for (let i = 0; i < f32.length; i++) { let s = f32[i]; s = s < -1 ? -1 : s > 1 ? 1 : s; o[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
+  for (let i = 0; i < f32.length; i++) {
+    let v = f32[i] * 32767 + (dither ? Math.random() - Math.random() : 0);
+    v = Math.round(v); o[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+  }
   return o;
 }
 

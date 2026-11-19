@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="css/app.css?v=1">
+<link rel="stylesheet" href="css/app.css?v=2">
 </head>
 <body>
 <div id="lock" class="overlay hidden">
@@ -34,6 +34,7 @@
 <header id="top">
   <div class="logo">DJ <b>MILI</b></div>
   <div id="meter"><i></i></div>
+  <span id="grBadge" class="grb" title="Reducción del limitador">LIM</span>
   <div id="recBadge" class="hidden">● <span>0:00</span></div>
   <button id="partyBtn" class="icon" title="Modo fiesta">🎉</button>
 </header>
@@ -160,7 +161,8 @@
   <details class="card"><summary>⚙️ Ajustes</summary>
     <label>Llave YouTube Data API (opcional, gratis)<input id="ytKey" type="password" placeholder="Solo si el buscador gratis falla"></label>
     <label>Curva del crossfader<select id="xfCurve"><option value="smooth">Suave (mezcla)</option><option value="cut">Corte (scratch)</option></select></label>
-    <label class="chk"><input type="checkbox" id="limiter" checked> Limitador de seguridad (evita saturar)</label>
+    <label class="chk"><input type="checkbox" id="normalize" checked> Volumen parejo entre canciones (normaliza a -14 LUFS)</label>
+    <p class="muted tiny">Limitador maestro siempre activo: techo -1 dBFS con 5 ms de anticipación, así nada satura (ni el micro, ni los pads, ni el EQ).</p>
     <label class="chk"><input type="checkbox" id="saveCopies" checked> Guardar copia de canciones en la app (funciona sin internet)</label>
     <div class="row wrap"><button class="btn" id="cacheClr">Limpiar caché de búsqueda</button><button class="btn" id="demoBtn">Recrear pistas demo</button></div>
     <p id="ver" class="muted tiny"></p>
@@ -177,6 +179,6 @@
   <button data-tab="rec">⏺️<span>Grabar</span></button>
   <button data-tab="more">☰<span>Más</span></button>
 </nav>
-<script type="module" src="js/app.js?v=1"></script>
+<script type="module" src="js/app.js?v=2"></script>
 </body>
 </html>

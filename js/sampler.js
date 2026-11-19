@@ -47,6 +47,8 @@ export const BUILTIN = [
     const osc = o.createOscillator(); osc.type = 'sawtooth'; osc.frequency.setValueAtTime(110, 0); osc.frequency.exponentialRampToValueAtTime(880, 3.9); const og = o.createGain(); og.gain.setValueAtTime(0.01, 0); og.gain.exponentialRampToValueAtTime(0.12, 3.9); og.gain.linearRampToValueAtTime(0, 4); osc.connect(og).connect(o.destination); osc.start();
   }) },
 ];
+// Fundido de 3 ms al final de muestras propias para que no truenen al terminar
+function fadeEdges(buf) { const n = Math.min(buf.length, Math.round(buf.sampleRate * 0.003)); for (let c = 0; c < buf.numberOfChannels; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) d[d.length - 1 - i] *= i / n; } return buf; }
 export const PAD_DEFAULT = { gain: 0.8, reverb: 0.15, delay: 0, delayTime: 0.25, low: 0, mid: 0, high: 0, choke: false };
 
 function makeIR(ctx, sec = 2.2) { const len = Math.floor(ctx.sampleRate * sec); const b = ctx.createBuffer(2, len, ctx.sampleRate); for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); } return b; }
@@ -66,7 +68,7 @@ export class Sampler {
       this.pads.push(p); this.apply(i);
     }
   }
-  apply(i) { const p = this.pads[i], t = this.eng.ctx.currentTime; p.g.gain.setTargetAtTime(p.gain, t, 0.01); p.rs.gain.setTargetAtTime(p.reverb, t, 0.01); p.ds.gain.setTargetAtTime(p.delay, t, 0.01); p.d.delayTime.setTargetAtTime(p.delayTime, t, 0.01); p.lo.gain.setTargetAtTime(p.low, t, 0.01); p.mi.gain.setTargetAtTime(p.mid, t, 0.01); p.hi.gain.setTargetAtTime(p.high, t, 0.01); }
+  apply(i) { const p = this.pads[i], t = this.eng.t(); p.g.gain.setTargetAtTime(p.gain, t, 0.01); p.rs.gain.setTargetAtTime(p.reverb, t, 0.01); p.ds.gain.setTargetAtTime(p.delay, t, 0.01); p.d.delayTime.setTargetAtTime(p.delayTime, t, 0.01); p.lo.gain.setTargetAtTime(p.low, t, 0.01); p.mi.gain.setTargetAtTime(p.mid, t, 0.01); p.hi.gain.setTargetAtTime(p.high, t, 0.01); }
   save() { settings.set('pads', this.pads.map(p => ({ gain: p.gain, reverb: p.reverb, delay: p.delay, delayTime: p.delayTime, low: p.low, mid: p.mid, high: p.high, choke: p.choke, custom: p.custom, name: p.custom ? p.name : undefined, license: p.license }))); }
   async init(onProgress) {
     for (let i = 0; i < 8; i++) {
@@ -81,7 +83,7 @@ export class Sampler {
   async decodeRetry(blob, tries = 3) {
     let last;
     for (let k = 0; k < tries; k++) {
-      try { const ab = await blob.arrayBuffer(); return await this.eng.ctx.decodeAudioData(ab); }
+      try { const ab = await blob.arrayBuffer(); return fadeEdges(await this.eng.ctx.decodeAudioData(ab)); }
       catch (e) { last = e; await new Promise(r => setTimeout(r, 300 * (k + 1))); }
     }
     throw last || new Error('no se pudo decodificar');
@@ -97,8 +99,12 @@ export class Sampler {
   trigger(i, vel = 1) {
     const p = this.pads[i]; if (!p.buffer) return false;
     this.eng.resume();
-    if (p.choke && p.src) { try { p.src.stop(); } catch (e) {} }
-    const s = this.eng.ctx.createBufferSource(); s.buffer = p.buffer; const vg = this.eng.ctx.createGain(); vg.gain.value = vel; s.connect(vg).connect(p.g); s.start(); p.src = s; s.onended = () => { vg.disconnect(); if (p.src === s) p.src = null; };
+    const c = this.eng.ctx, t = this.eng.t();
+    // choke con fundido de 6 ms (sin clic) en vez de cortar en seco
+    if (p.choke && p.src) { const o = p.src, og = p.vg; og.gain.cancelScheduledValues(t); og.gain.setValueAtTime(og.gain.value, t); og.gain.linearRampToValueAtTime(0, t + 0.006); try { o.stop(t + 0.01); } catch (e) {} }
+    const s = c.createBufferSource(); s.buffer = p.buffer; const vg = c.createGain(); vg.gain.value = 0;
+    vg.gain.setValueAtTime(0, t); vg.gain.linearRampToValueAtTime(vel, t + 0.002); // ataque de 2 ms
+    s.connect(vg).connect(p.g); s.start(t); p.src = s; p.vg = vg; s.onended = () => { vg.disconnect(); if (p.src === s) p.src = null; };
     return true;
   }
 }

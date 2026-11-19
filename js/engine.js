@@ -18,34 +18,44 @@ export class Engine {
     this.preEq = c.createGain(); this.postEq = c.createGain();
     this.masterIn.connect(this.preEq);
     this.preEq.connect(this.eq[0]); for (let i = 0; i < 9; i++) this.eq[i].connect(this.eq[i + 1]); this.eq[9].connect(this.postEq);
-    this.limiter = c.createDynamicsCompressor();
-    Object.assign(this.limiter, {}); this.limiter.threshold.value = -1; this.limiter.knee.value = 0; this.limiter.ratio.value = 20; this.limiter.attack.value = 0.002; this.limiter.release.value = 0.12;
-    this.master = c.createGain(); this.master.gain.value = 0.9;
-    this.postEq.connect(this.limiter).connect(this.master);
+    this.master = c.createGain(); this.master.gain.value = 1;
+    this.postEq.connect(this.master);
+    this.out = c.createGain(); // salida ya limitada: altavoz, medidor y grabador
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 1024; this.analyser.smoothingTimeConstant = 0.6;
-    this.master.connect(this.analyser);
-    this.master.connect(c.destination);
+    this.out.connect(this.analyser); this.out.connect(c.destination);
+    this.gr = 0; this.overs = 0;
     this.decks = [new Deck(this, 0), new Deck(this, 1)];
     this.xf = 0.5; this.xfCurve = 'smooth'; this.setCrossfader(0.5);
     this.mic = null; this.duckOn = true;
     this.rec = null;
   }
+  async init() {
+    const c = this.ctx;
+    await c.audioWorklet.addModule(new URL('./worklets.js?v=2', import.meta.url));
+    this.limiter = new AudioWorkletNode(c, 'djm-limiter', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', processorOptions: { ceilingDb: -1, lookahead: 0.005, release: 0.12 } });
+    this.limiter.port.onmessage = e => { this.gr = e.data.gr; this.overs = e.data.over; };
+    this.master.connect(this.limiter).connect(this.out);
+    this.decks.forEach(d => d.attach());
+    this._wl = true;
+  }
+  // Tiempo de programación seguro: un poco en el futuro para que ninguna rampa caiga "en el pasado" (eso causa clics)
+  t() { const c = this.ctx; return c.currentTime + Math.min(0.03, Math.max(0.006, c.baseLatency || 0)); }
   resume() { return this.ctx.state !== 'running' ? this.ctx.resume() : Promise.resolve(); }
   setEQBand(i, { f, g, q, t }) {
     const b = this.eq[i], now = this.ctx.currentTime;
-    if (t) b.type = t; if (f) b.frequency.setTargetAtTime(f, now, 0.01);
-    if (g !== undefined) b.gain.setTargetAtTime(this.eqBypass ? 0 : g, now, 0.01); if (q) b.Q.setTargetAtTime(q, now, 0.01);
+    if (t) b.type = t; if (f) b.frequency.setTargetAtTime(f, this.t(), 0.01);
+    if (g !== undefined) b.gain.setTargetAtTime(this.eqBypass ? 0 : g, this.t(), 0.01); if (q) b.Q.setTargetAtTime(q, this.t(), 0.01);
     b._g = g !== undefined ? g : b._g;
   }
   setEQ(bands) { bands.forEach((b, i) => this.setEQBand(i, b)); }
-  setEQBypass(on) { this.eqBypass = on; this.eq.forEach(b => b.gain.setTargetAtTime(on ? 0 : (b._g || 0), this.ctx.currentTime, 0.01)); }
-  setLimiter(on) { this.postEq.disconnect(); this.limiter.disconnect(); if (on) { this.postEq.connect(this.limiter).connect(this.master); } else this.postEq.connect(this.master); }
+  setEQBypass(on) { this.eqBypass = on; this.eq.forEach(b => b.gain.setTargetAtTime(on ? 0 : (b._g || 0), this.t(), 0.01)); }
+  setLimiter() { /* el limitador brickwall siempre está activo (techo -1 dBFS) */ }
   setCrossfader(x) {
     this.xf = x; const now = this.ctx.currentTime;
     let a, b;
     if (this.xfCurve === 'cut') { a = x < 0.95 ? 1 : (1 - x) * 20; b = x > 0.05 ? 1 : x * 20; }
     else { a = Math.cos(x * Math.PI / 2); b = Math.sin(x * Math.PI / 2); }
-    this.decks[0].xfGain.gain.setTargetAtTime(a, now, 0.008); this.decks[1].xfGain.gain.setTargetAtTime(b, now, 0.008);
+    this.decks[0].xfGain.gain.setTargetAtTime(a, this.t(), 0.008); this.decks[1].xfGain.gain.setTargetAtTime(b, this.t(), 0.008);
   }
   level() { const d = new Uint8Array(this.analyser.fftSize); this.analyser.getByteTimeDomainData(d); let m = 0; for (const v of d) m = Math.max(m, Math.abs(v - 128)); return m / 128; }
   bass() { const d = new Uint8Array(this.analyser.frequencyBinCount); this.analyser.getByteFrequencyData(d); let s = 0; for (let i = 1; i < 8; i++) s += d[i]; return s / (7 * 255); }
@@ -61,10 +71,10 @@ export class Engine {
     const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4000;
     src.connect(hp).connect(g); g.connect(this.masterIn); g.connect(d); d.connect(lp).connect(fb).connect(d); lp.connect(wet).connect(this.masterIn);
     this.mic = { stream, src, g, d, fb, wet };
-    if (this.duckOn) this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(0.4, c.currentTime, 0.08));
+    if (this.duckOn) this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(0.4, this.t(), 0.08));
   }
-  micSet({ echo, echoTime, gain }) { if (!this.mic) return; const t = this.ctx.currentTime; if (echo !== undefined) this.mic.wet.gain.setTargetAtTime(echo, t, 0.02); if (echoTime) this.mic.d.delayTime.setTargetAtTime(echoTime, t, 0.02); if (gain !== undefined) this.mic.g.gain.setTargetAtTime(gain, t, 0.02); }
-  micOff() { if (!this.mic) return; this.mic.stream.getTracks().forEach(t => t.stop()); try { this.mic.src.disconnect(); this.mic.g.disconnect(); this.mic.wet.disconnect(); } catch (e) {} this.mic = null; this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(1, this.ctx.currentTime, 0.1)); }
+  micSet({ echo, echoTime, gain }) { if (!this.mic) return; const t = this.ctx.currentTime; if (echo !== undefined) this.mic.wet.gain.setTargetAtTime(echo, this.t(), 0.02); if (echoTime) this.mic.d.delayTime.setTargetAtTime(echoTime, this.t(), 0.02); if (gain !== undefined) this.mic.g.gain.setTargetAtTime(gain, this.t(), 0.02); }
+  micOff() { if (!this.mic) return; this.mic.stream.getTracks().forEach(t => t.stop()); try { this.mic.src.disconnect(); this.mic.g.disconnect(); this.mic.wet.disconnect(); } catch (e) {} this.mic = null; this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(1, this.t(), 0.1)); }
 
   // ---------- Grabador (AudioWorklet, PCM sin pérdida) ----------
   async recStart() {
@@ -72,29 +82,15 @@ export class Engine {
     const c = this.ctx;
     const rec = { L: [], R: [], frames: 0, started: Date.now() };
     const onData = (l, r) => { rec.L.push(floatTo16(l)); rec.R.push(floatTo16(r)); rec.frames += l.length; };
-    if (c.audioWorklet && !this._wl) {
-      const code = `class R extends AudioWorkletProcessor{constructor(){super();this.on=true;this.n=0;this.l=new Float32Array(4096);this.r=new Float32Array(4096);this.port.onmessage=e=>{if(e.data==='stop'){this.flush();this.on=false;}}}
-      flush(){if(this.n){this.port.postMessage([this.l.slice(0,this.n),this.r.slice(0,this.n)]);this.n=0;}}
-      process(ins){const i=ins[0];if(!this.on)return false;if(i&&i.length){const a=i[0],b=i[1]||i[0];for(let k=0;k<a.length;k++){this.l[this.n]=a[k];this.r[this.n]=b[k];this.n++;if(this.n===4096){this.port.postMessage([this.l,this.r]);this.l=new Float32Array(4096);this.r=new Float32Array(4096);this.n=0;}}}return true;}}
-      registerProcessor('djm-rec',R);`;
-      const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
-      try { await c.audioWorklet.addModule(url); this._wl = true; } catch (e) { this._wl = false; }
-    }
-    if (this._wl) {
-      const node = new AudioWorkletNode(c, 'djm-rec', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 2, channelCountMode: 'explicit' });
-      node.port.onmessage = e => onData(e.data[0], e.data[1]);
-      this.master.connect(node); rec.node = node;
-    } else {
-      const sp = c.createScriptProcessor(4096, 2, 2);
-      sp.onaudioprocess = e => onData(new Float32Array(e.inputBuffer.getChannelData(0)), new Float32Array(e.inputBuffer.getChannelData(1)));
-      const z = c.createGain(); z.gain.value = 0; this.master.connect(sp); sp.connect(z).connect(c.destination); rec.node = sp; rec.z = z;
-    }
+    const node = new AudioWorkletNode(c, 'djm-rec', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 2, channelCountMode: 'explicit' });
+    node.port.onmessage = e => onData(e.data[0], e.data[1]);
+    this.out.connect(node); rec.node = node;
     this.rec = rec;
   }
   async recStop() {
     const rec = this.rec; if (!rec) return null;
     if (rec.node.port) { rec.node.port.postMessage('stop'); await new Promise(r => setTimeout(r, 150)); }
-    try { this.master.disconnect(rec.node); } catch (e) {} try { rec.node.disconnect(); } catch (e) {}
+    try { this.out.disconnect(rec.node); } catch (e) {} try { rec.node.disconnect(); } catch (e) {}
     this.rec = null;
     const join = arr => { const o = new Int16Array(rec.frames); let p = 0; for (const a of arr) { o.set(a.subarray(0, Math.min(a.length, rec.frames - p)), p); p += a.length; } return o; };
     return { L: join(rec.L), R: join(rec.R), sampleRate: this.ctx.sampleRate, seconds: rec.frames / this.ctx.sampleRate, started: rec.started };
@@ -106,21 +102,22 @@ export class Engine {
 export class Deck {
   constructor(eng, idx) {
     this.eng = eng; this.idx = idx; const c = eng.ctx;
+    this.norm = c.createGain(); // normalización de sonoridad por pista
     this.trim = c.createGain();
     this.eqLow = c.createBiquadFilter(); this.eqLow.type = 'lowshelf'; this.eqLow.frequency.value = 220;
     this.eqMid = c.createBiquadFilter(); this.eqMid.type = 'peaking'; this.eqMid.frequency.value = 1000; this.eqMid.Q.value = 0.7;
     this.eqHigh = c.createBiquadFilter(); this.eqHigh.type = 'highshelf'; this.eqHigh.frequency.value = 3500;
-    this.filter = c.createBiquadFilter(); this.filter.type = 'allpass'; this.filter.Q.value = 1;
+    // Filtro DJM: LPF + HPF fijos en serie (nunca se cambia el tipo => sin clics)
+    this.lpf = c.createBiquadFilter(); this.lpf.type = 'lowpass'; this.lpf.frequency.value = 22000; this.lpf.Q.value = 0.707;
+    this.hpf = c.createBiquadFilter(); this.hpf.type = 'highpass'; this.hpf.frequency.value = 10; this.hpf.Q.value = 0.707;
     this.fxIn = c.createGain(); this.dry = c.createGain(); this.wet = c.createGain(); this.wet.gain.value = 0;
     this.fxOut = c.createGain();
     this.vol = c.createGain(); this.duck = c.createGain(); this.xfGain = c.createGain();
-    this.trim.connect(this.eqLow).connect(this.eqMid).connect(this.eqHigh).connect(this.filter).connect(this.fxIn);
+    this.norm.connect(this.trim).connect(this.eqLow).connect(this.eqMid).connect(this.eqHigh).connect(this.lpf).connect(this.hpf).connect(this.fxIn);
     this.fxIn.connect(this.dry).connect(this.fxOut);
-    // Echo (sincronizado al BPM)
     this.echoD = c.createDelay(4); this.echoFb = c.createGain(); this.echoFb.gain.value = 0.45; this.echoLp = c.createBiquadFilter(); this.echoLp.type = 'lowpass'; this.echoLp.frequency.value = 5000;
     this.echoSend = c.createGain(); this.echoSend.gain.value = 0;
     this.fxIn.connect(this.echoSend).connect(this.echoD); this.echoD.connect(this.echoLp).connect(this.echoFb).connect(this.echoD); this.echoLp.connect(this.wet);
-    // Flanger
     this.flD = c.createDelay(0.05); this.flD.delayTime.value = 0.004; this.flFb = c.createGain(); this.flFb.gain.value = 0.55;
     this.flLfo = c.createOscillator(); this.flLfo.frequency.value = 0.25; this.flDepth = c.createGain(); this.flDepth.gain.value = 0.003;
     this.flLfo.connect(this.flDepth).connect(this.flD.delayTime); this.flLfo.start();
@@ -128,44 +125,62 @@ export class Deck {
     this.fxIn.connect(this.flSend).connect(this.flD); this.flD.connect(this.flFb).connect(this.flD); this.flD.connect(this.wet);
     this.wet.connect(this.fxOut);
     this.fxOut.connect(this.vol).connect(this.duck).connect(this.xfGain).connect(eng.masterIn);
-    this.buffer = null; this.track = null; this.src = null; this.playing = false;
-    this.pos0 = 0; this.t0 = 0; this.rate = 1; this.bpm = 0; this.beatOffset = 0; this.key = null;
+    this.buffer = null; this.track = null; this.playing = false;
+    this.pos0 = 0; this.rate = 1; this.bpm = 0; this.beatOffset = 0; this.key = null; this.keylock = true;
     this.cues = new Array(8).fill(null); this.cuePoint = 0; this.loop = null; this.fx = 'none'; this.fxWet = 0.5;
-    this.wave = null; this.onEnd = null;
+    this.wave = null; this.onEnd = null; this.seq = 0; this.st = { p: 0, t: 0, r: 1 }; this.when = 0; this.normDb = 0;
   }
+  attach() {
+    const c = this.eng.ctx;
+    this.node = new AudioWorkletNode(c, 'djm-deck', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    this.node.connect(this.norm);
+    this.node.port.onmessage = e => {
+      const m = e.data; if (m.seq !== undefined && m.seq < this.seq) return;
+      if (m.ev === 'ended') { this.playing = false; this.pos0 = this.duration; this.onEnd && this.onEnd(this); return; }
+      if (m.ev === 'autoDone') { this._autoDone && this._autoDone(); return; }
+      if (m.p !== undefined) { this.st = { p: m.p, t: m.t, r: m.r }; if (!m.pl && !this.playing) this.pos0 = m.p; }
+    };
+  }
+  send(m, transfer) { m.seq = ++this.seq; this.node.port.postMessage(m, transfer || []); }
   load(buffer, track, analysis = {}) {
-    this.stop(); this.buffer = buffer; this.track = track; this.pos0 = 0; this.cuePoint = 0; this.loop = null;
+    this.stop(); this.track = track;
+    this.buffer = { duration: buffer.duration, length: buffer.length, sampleRate: buffer.sampleRate };
+    const L = buffer.getChannelData(0).slice(), R = (buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : buffer.getChannelData(0)).slice();
+    this.send({ cmd: 'load', L, R }, [L.buffer, R.buffer]);
+    this.send({ cmd: 'keylock', on: this.keylock });
+    this.pos0 = 0; this.cuePoint = 0; this.loop = null; this.st = { p: 0, t: this.eng.ctx.currentTime, r: 1 };
     this.bpm = analysis.bpm || 0; this.beatOffset = analysis.offset || 0; this.key = analysis.key || null;
     this.cues = (analysis.cues && analysis.cues.slice()) || new Array(8).fill(null);
+    this.setNorm(analysis.normDb || 0);
     this.wave = computeWave(buffer);
   }
+  setNorm(db) { this.normDb = db; this.norm.gain.setTargetAtTime(Math.pow(10, db / 20), this.eng.t(), 0.05); }
+  setKeylock(on) { this.keylock = on; if (this.node) this.send({ cmd: 'keylock', on }); }
   get duration() { return this.buffer ? this.buffer.duration : 0; }
   position() {
     if (!this.playing) return this.pos0;
-    let p = this.pos0 + (this.eng.ctx.currentTime - this.t0) * this.rate;
+    const now = this.eng.ctx.currentTime; if (now < this.when) return this.st.p;
+    let p = this.st.p + Math.max(0, now - Math.max(this.st.t, this.when)) * this.st.r;
     if (this.loop && p >= this.loop.end) { const L = this.loop.end - this.loop.start; p = this.loop.start + ((p - this.loop.start) % L); }
     return Math.min(p, this.duration);
   }
-  anchor() { this.pos0 = this.position(); this.t0 = this.eng.ctx.currentTime; }
-  _startSrc(at, when = 0) {
-    const c = this.eng.ctx; const s = c.createBufferSource(); s.buffer = this.buffer; s.playbackRate.value = this.rate;
-    if (this.loop) { s.loop = true; s.loopStart = this.loop.start; s.loopEnd = this.loop.end; }
-    s.connect(this.trim);
-    const t = when || c.currentTime;
-    s.start(t, Math.max(0, Math.min(at, this.duration - 0.001)));
-    s.onended = () => { if (this.src === s && this.playing) { this.playing = false; this.pos0 = this.duration; this.src = null; this.onEnd && this.onEnd(this); } };
-    this.src = s; this.t0 = t; this.pos0 = at;
+  anchor() { const p = this.position(); this.st = { p, t: this.eng.ctx.currentTime, r: this.rate }; this.pos0 = p; }
+  play(when = 0) {
+    if (!this.buffer || this.playing) return; this.eng.resume();
+    if (this.pos0 >= this.duration - 0.05) { this.pos0 = 0; this.send({ cmd: 'seek', t: 0 }); }
+    this.when = when || 0; this.st = { p: this.pos0, t: Math.max(this.eng.ctx.currentTime, this.when), r: this.rate };
+    this.send({ cmd: 'play', when: this.when }); this.playing = true;
   }
-  play(when = 0) { if (!this.buffer || this.playing) return; this.eng.resume(); if (this.pos0 >= this.duration - 0.05) this.pos0 = 0; this._startSrc(this.pos0, when); this.playing = true; }
-  pause() { if (!this.playing) return; this.anchor(); this.playing = false; this._kill(); }
-  _kill() { if (this.src) { const s = this.src; this.src = null; try { s.onended = null; s.stop(); s.disconnect(); } catch (e) {} } }
-  stop() { this._kill(); this.playing = false; this.pos0 = 0; }
+  pause() { if (!this.playing) return; this.anchor(); this.playing = false; this.send({ cmd: 'pause' }); }
+  stop() { this.playing = false; this.pos0 = 0; this.loop = null; if (this.node) { this.send({ cmd: 'loop' }); this.send({ cmd: 'stop' }); } }
   toggle() { this.playing ? this.pause() : this.play(); return this.playing; }
-  seek(t) { t = Math.max(0, Math.min(t, this.duration - 0.01)); if (this.loop && (t < this.loop.start || t >= this.loop.end)) this.loop = null; if (this.playing) { this._kill(); this._startSrc(t); } else this.pos0 = t; }
-  cue() { // estilo CDJ: en pausa fija el cue; tocando vuelve al cue y pausa
-    if (this.playing) { this.pause(); this.seek(this.cuePoint); } else { this.cuePoint = this.snap(this.position()); this.seek(this.cuePoint); }
+  seek(t) {
+    t = Math.max(0, Math.min(t, this.duration - 0.01));
+    if (this.loop && (t < this.loop.start || t >= this.loop.end)) { this.loop = null; this.send({ cmd: 'loop' }); }
+    this.send({ cmd: 'seek', t }); this.pos0 = t; this.st = { p: t, t: this.eng.ctx.currentTime, r: this.rate };
   }
-  setRate(r) { this.anchor(); this.rate = r; if (this.src) this.src.playbackRate.setValueAtTime(r, this.eng.ctx.currentTime); }
+  cue() { if (this.playing) { this.pause(); this.seek(this.cuePoint); } else { this.cuePoint = this.snap(this.position()); this.seek(this.cuePoint); } }
+  setRate(r) { this.anchor(); this.rate = r; this.st.r = r; if (this.node) this.send({ cmd: 'rate', r, glide: true }); }
   get effBpm() { return this.bpm * this.rate; }
   beatLen() { return this.bpm ? 60 / this.bpm : 0.5; }
   snap(t) { if (!this.bpm) return t; const b = this.beatLen(); return this.beatOffset + Math.round((t - this.beatOffset) / b) * b; }
@@ -181,17 +196,14 @@ export class Deck {
     const start = this.bpm ? this.beatOffset + Math.floor((p - this.beatOffset) / b + 1e-6) * b : p;
     const end = Math.min(this.duration, start + beats * b);
     this.anchor(); this.loop = { start: Math.max(0, start), end, beats };
-    if (this.src) { this.src.loopStart = this.loop.start; this.src.loopEnd = this.loop.end; this.src.loop = true; }
+    this.send({ cmd: 'loop', s: this.loop.start, e: this.loop.end });
     return true;
   }
-  exitLoop() { if (!this.loop) return; this.anchor(); this.loop = null; if (this.src) this.src.loop = false; }
+  exitLoop() { if (!this.loop) return; this.anchor(); this.loop = null; this.send({ cmd: 'loop' }); }
   sync(other) {
     if (!this.bpm || !other.bpm) return false;
-    let target = other.effBpm / this.bpm;
-    // fase: alinear fracción de beat
-    this.setRate(target);
+    this.setRate(other.effBpm / this.bpm);
     if (other.playing && this.playing) {
-      const ob = 60 / other.effBpm, mb = 60 / this.effBpm;
       const oPh = (((other.position() - other.beatOffset) / other.beatLen()) % 1 + 1) % 1;
       const mPh = (((this.position() - this.beatOffset) / this.beatLen()) % 1 + 1) % 1;
       let d = oPh - mPh; if (d > 0.5) d -= 1; if (d < -0.5) d += 1;
@@ -199,42 +211,38 @@ export class Deck {
     }
     return true;
   }
-  setEQ3(band, db) { const n = { low: this.eqLow, mid: this.eqMid, high: this.eqHigh }[band]; n.gain.setTargetAtTime(db, this.eng.ctx.currentTime, 0.01); }
-  // Filtro DJM: -1 = pasa-bajos total, 0 = neutro, +1 = pasa-altos total
+  setEQ3(band, db) { const n = { low: this.eqLow, mid: this.eqMid, high: this.eqHigh }[band]; n.gain.setTargetAtTime(db, this.eng.t(), 0.01); }
   setFilter(v) {
-    const f = this.filter, t = this.eng.ctx.currentTime;
-    if (Math.abs(v) < 0.03) { f.type = 'allpass'; return; }
-    if (v < 0) { f.type = 'lowpass'; f.frequency.setTargetAtTime(20000 * Math.pow(150 / 20000, -v), t, 0.01); }
-    else { f.type = 'highpass'; f.frequency.setTargetAtTime(20 * Math.pow(6000 / 20, v), t, 0.01); }
-    f.Q.setTargetAtTime(1.2 + Math.abs(v) * 3, t, 0.01);
+    const t = this.eng.ctx.currentTime;
+    const lf = v < -0.02 ? 20000 * Math.pow(150 / 20000, -v) : 22000, hf = v > 0.02 ? 20 * Math.pow(6000 / 20, v) : 10;
+    const q = 0.707 + Math.abs(v) * 3;
+    this.lpf.frequency.setTargetAtTime(Math.min(lf, this.eng.ctx.sampleRate * 0.45), this.eng.t(), 0.015); this.hpf.frequency.setTargetAtTime(hf, this.eng.t(), 0.015);
+    this.lpf.Q.setTargetAtTime(v < -0.02 ? q : 0.707, this.eng.t(), 0.015); this.hpf.Q.setTargetAtTime(v > 0.02 ? q : 0.707, this.eng.t(), 0.015);
   }
+  get filter() { return { type: this.lpf.frequency.value < 21000 ? 'lowpass' : this.hpf.frequency.value > 11 ? 'highpass' : 'none' }; }
   setFX(type, wet = this.fxWet, beats = 0.75) {
     this.fx = type; this.fxWet = wet; const t = this.eng.ctx.currentTime;
-    this.echoSend.gain.setTargetAtTime(type === 'echo' ? 1 : 0, t, 0.02);
-    this.flSend.gain.setTargetAtTime(type === 'flanger' ? 1 : 0, t, 0.02);
-    this.wet.gain.setTargetAtTime(type === 'none' ? 0 : wet, t, 0.02);
-    this.dry.gain.setTargetAtTime(type === 'flanger' ? 1 - wet * 0.5 : 1, t, 0.02);
-    this.echoD.delayTime.setTargetAtTime(Math.min(3.9, (this.bpm ? 60 / this.effBpm : 0.5) * beats), t, 0.02);
+    this.echoSend.gain.setTargetAtTime(type === 'echo' ? 1 : 0, this.eng.t(), 0.02);
+    this.flSend.gain.setTargetAtTime(type === 'flanger' ? 1 : 0, this.eng.t(), 0.02);
+    this.wet.gain.setTargetAtTime(type === 'none' ? 0 : wet, this.eng.t(), 0.02);
+    this.dry.gain.setTargetAtTime(type === 'flanger' ? 1 - wet * 0.5 : 1, this.eng.t(), 0.02);
+    this.echoD.delayTime.setTargetAtTime(Math.min(3.9, (this.bpm ? 60 / this.effBpm : 0.5) * beats), this.eng.t(), 0.02);
   }
+  // Freno de vinil: la velocidad baja a 0 (con cambio de tono, como un tornamesa real)
   brake(sec = 1.2) {
-    if (!this.playing || !this.src) return;
-    const c = this.eng.ctx, t = c.currentTime; this.anchor();
-    this.src.playbackRate.cancelScheduledValues(t); this.src.playbackRate.setValueAtTime(this.rate, t); this.src.playbackRate.linearRampToValueAtTime(0.01, t + sec);
-    const p = this.pos0 + this.rate * sec / 2;
-    setTimeout(() => { this._kill(); this.playing = false; this.pos0 = Math.min(p, this.duration); }, sec * 1000);
+    if (!this.playing) return; const t = this.eng.ctx.currentTime; this.anchor();
+    this.send({ cmd: 'auto', pts: [[t, this.rate], [t + sec, 0.001]] });
+    this._autoDone = () => { this._autoDone = null; this.send({ cmd: 'rate', r: this.rate }); this.pause(); };
   }
-  // Scratch simulado: movimiento de ida y vuelta tipo "baby scratch" (Web Audio no reproduce en reversa en tiempo real)
+  // Scratch "baby": ida y vuelta de velocidad y regreso al punto (Web Audio no reproduce en reversa en tiempo real)
   scratch(ms = 600) {
-    if (!this.playing || !this.src) return;
-    const c = this.eng.ctx, t = c.currentTime, pr = this.src.playbackRate; this.anchor();
-    const pat = [2.2, 0.15, 2.0, 0.2, 2.4, 0.1]; const step = ms / 1000 / pat.length;
-    pr.cancelScheduledValues(t); pr.setValueAtTime(this.rate, t);
-    pat.forEach((v, i) => pr.linearRampToValueAtTime(v * this.rate, t + step * (i + 0.5)));
-    pr.linearRampToValueAtTime(this.rate, t + ms / 1000);
-    const back = this.position();
-    setTimeout(() => { if (this.playing) this.seek(back); }, ms); // vuelve a donde estaba (como regresar el disco)
+    if (!this.playing) return; const t = this.eng.ctx.currentTime, back = this.position();
+    const pat = [2.2, 0.15, 2.0, 0.2, 2.4, 0.1], step = ms / 1000 / pat.length;
+    const pts = [[t, this.rate], ...pat.map((v, i) => [t + step * (i + 0.5), v * this.rate]), [t + ms / 1000, this.rate]];
+    this.send({ cmd: 'auto', pts });
+    this._autoDone = () => { this._autoDone = null; if (this.playing) this.seek(back + ms / 1000 * this.rate * 0.3); };
   }
-  nudge(r) { if (this.src) this.src.playbackRate.setTargetAtTime(this.rate * r, this.eng.ctx.currentTime, 0.02); if (r === 1) this.anchor(); else this._nudgeT = this._nudgeT; }
+  nudge(r) { if (this.node && this.playing) this.send({ cmd: 'rate', r: this.rate * r, glide: true }); if (r === 1) this.anchor(); }
 }
 
 // Forma de onda coloreada (graves=rojo, medios=verde, agudos=azul), ~100 columnas por segundo.
