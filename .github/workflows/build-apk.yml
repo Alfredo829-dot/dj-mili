@@ -45,7 +45,7 @@ jobs:
           cp "$APK" dj-mili.apk
           rm -f android/app/release.p12
           "$BT/apksigner" verify --verbose --print-certs dj-mili.apk | grep -Ev "^WARNING" | tee verify.txt
-          "$BT/aapt" dump badging dj-mili.apk | grep -E "^(package|sdkVersion|targetSdkVersion|uses-permission|application-label|launchable)" | tee badging.txt
+          "$BT/aapt" dump badging dj-mili.apk | grep -E "^(package|sdkVersion|targetSdkVersion|uses-permission|application-label:|launchable)" | tee badging.txt
           "$BT/aapt" list dj-mili.apk | grep -c "assets/www/" | sed 's/^/archivos web en el APK: /' | tee -a badging.txt
           ls -l dj-mili.apk
       - name: Publicar Release

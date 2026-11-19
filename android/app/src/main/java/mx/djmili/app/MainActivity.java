@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.media.AudioManager;
@@ -54,6 +55,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCb;
     private PermissionRequest pendingPerm;
     private boolean landscapeLocked = false;
+    private static int renderCrashes = 0;
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
@@ -67,6 +69,7 @@ public class MainActivity extends Activity {
         }
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
+        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) WebView.setWebContentsDebuggingEnabled(true);
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(7, 6, 15));
         web = new WebView(this);
@@ -116,7 +119,8 @@ public class MainActivity extends Activity {
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 // Si Android mata el motor web (poca memoria), reabrimos la app en vez de cerrarla.
-                recreate();
+                if (++renderCrashes <= 3) recreate();
+                else { Toast.makeText(MainActivity.this, "Poca memoria: cierra otras apps y vuelve a abrir DJ Mili", Toast.LENGTH_LONG).show(); finish(); }
                 return true;
             }
         });
