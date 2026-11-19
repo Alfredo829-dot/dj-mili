@@ -77,7 +77,12 @@ export class Engine {
   micOff() { if (!this.mic) return; this.mic.stream.getTracks().forEach(t => t.stop()); try { this.mic.src.disconnect(); this.mic.g.disconnect(); this.mic.wet.disconnect(); } catch (e) {} this.mic = null; this.decks.forEach(dk => dk.duck.gain.setTargetAtTime(1, this.t(), 0.1)); }
 
   // ---------- Grabador (AudioWorklet, PCM sin pérdida) ----------
-  async recStart() {
+  compressedType() {
+    if (!window.MediaRecorder) return null;
+    for (const [type, ext] of [['audio/mp4;codecs=mp4a.40.2', 'm4a'], ['audio/webm;codecs=opus', 'webm'], ['audio/webm', 'webm']]) if (MediaRecorder.isTypeSupported(type)) return { type, ext };
+    return null;
+  }
+  async recStart(opts = {}) {
     if (this.rec) return;
     const c = this.ctx;
     const rec = { L: [], R: [], frames: 0, started: Date.now() };
@@ -85,15 +90,18 @@ export class Engine {
     const node = new AudioWorkletNode(c, 'djm-rec', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 2, channelCountMode: 'explicit' });
     node.port.onmessage = e => onData(e.data[0], e.data[1]);
     this.out.connect(node); rec.node = node;
+    const ct = opts.compressed && this.compressedType();
+    if (ct) { const dst = this.ctx.createMediaStreamDestination(); this.out.connect(dst); const mr = new MediaRecorder(dst.stream, { mimeType: ct.type, audioBitsPerSecond: 256000 }); const chunks = []; mr.ondataavailable = e => e.data.size && chunks.push(e.data); mr.start(1000); rec.mr = { mr, chunks, dst, ct }; }
     this.rec = rec;
   }
   async recStop() {
     const rec = this.rec; if (!rec) return null;
     if (rec.node.port) { rec.node.port.postMessage('stop'); await new Promise(r => setTimeout(r, 150)); }
     try { this.out.disconnect(rec.node); } catch (e) {} try { rec.node.disconnect(); } catch (e) {}
+    if (rec.mr) { const m = rec.mr; await new Promise(res => { m.mr.onstop = res; m.mr.stop(); }); try { this.out.disconnect(m.dst); } catch (e) {} rec.compressed = { blob: new Blob(m.chunks, { type: m.ct.type.split(';')[0] }), ext: m.ct.ext, type: m.ct.type.replace(/;.*/, '') + ' 256 kbps' }; }
     this.rec = null;
     const join = arr => { const o = new Int16Array(rec.frames); let p = 0; for (const a of arr) { o.set(a.subarray(0, Math.min(a.length, rec.frames - p)), p); p += a.length; } return o; };
-    return { L: join(rec.L), R: join(rec.R), sampleRate: this.ctx.sampleRate, seconds: rec.frames / this.ctx.sampleRate, started: rec.started };
+    return { L: join(rec.L), R: join(rec.R), sampleRate: this.ctx.sampleRate, seconds: rec.frames / this.ctx.sampleRate, started: rec.started, compressed: rec.compressed };
   }
   recSeconds() { return this.rec ? this.rec.frames / this.ctx.sampleRate : 0; }
 }
@@ -125,6 +133,7 @@ export class Deck {
     this.fxIn.connect(this.flSend).connect(this.flD); this.flD.connect(this.flFb).connect(this.flD); this.flD.connect(this.wet);
     this.wet.connect(this.fxOut);
     this.fxOut.connect(this.vol).connect(this.duck).connect(this.xfGain).connect(eng.masterIn);
+    this.an = c.createAnalyser(); this.an.fftSize = 256; this.duck.connect(this.an); this._lv = new Float32Array(256); // solo medidor visual
     this.buffer = null; this.track = null; this.playing = false;
     this.pos0 = 0; this.rate = 1; this.bpm = 0; this.beatOffset = 0; this.key = null; this.keylock = true;
     this.cues = new Array(8).fill(null); this.cuePoint = 0; this.loop = null; this.fx = 'none'; this.fxWet = 0.5;
@@ -242,6 +251,7 @@ export class Deck {
     this.send({ cmd: 'auto', pts });
     this._autoDone = () => { this._autoDone = null; if (this.playing) this.seek(back + ms / 1000 * this.rate * 0.3); };
   }
+  level() { this.an.getFloatTimeDomainData(this._lv); let m = 0; for (let i = 0; i < 256; i++) { const v = Math.abs(this._lv[i]); if (v > m) m = v; } return m; }
   nudge(r) { if (this.node && this.playing) this.send({ cmd: 'rate', r: this.rate * r, glide: true }); if (r === 1) this.anchor(); }
 }
 

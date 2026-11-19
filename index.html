@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="css/app.css?v=2">
+<link rel="stylesheet" href="css/app.css?v=4">
 </head>
 <body>
 <div id="lock" class="overlay hidden">
@@ -36,100 +36,99 @@
   <div id="meter"><i></i></div>
   <span id="grBadge" class="grb" title="Reducción del limitador">LIM</span>
   <div id="recBadge" class="hidden">● <span>0:00</span></div>
+  <button id="fullBtn" class="icon" title="Pantalla completa y horizontal">⛶</button>
+  <button id="ytBtn" class="icon" title="YouTube">📺</button>
   <button id="partyBtn" class="icon" title="Modo fiesta">🎉</button>
+  <button id="menuBtn" class="icon" title="Menú">☰</button>
 </header>
 
-<main>
-<section id="t-mix" class="tab active">
+<main id="stage">
   <div id="deck0" class="deck"></div>
-  <div class="card mixer">
+  <div class="card mixer" id="mixer">
+    <div class="xfrow"><b class="a">A</b><input type="range" id="xf" min="0" max="1" step="0.001" value="0.5" data-midi="xf"><b class="b">B</b></div>
     <div class="row between">
       <label class="chk"><input type="checkbox" id="automix" data-midi="automix"> Auto‑mix</label>
       <select id="mixBeats"><option value="8">8 beats</option><option value="16" selected>16 beats</option><option value="32">32 beats</option></select>
+      <button class="btn sm" id="micQuick" data-midi="micq">🎤</button>
       <span id="harm" class="badge">—</span>
     </div>
-    <div class="xfrow"><b class="a">A</b><input type="range" id="xf" min="0" max="1" step="0.001" value="0.5" data-midi="xf"><b class="b">B</b></div>
     <div id="mixMsg" class="muted tiny center"></div>
   </div>
   <div id="deck1" class="deck"></div>
-</section>
 
-<section id="t-pads" class="tab">
-  <div class="card">
-    <div class="row between"><h3>Pads</h3><span class="muted tiny">Toca = disparar · ⚙ = ajustes del pad</span></div>
+  <section class="card" id="padsCard">
+    <div class="row between"><h3>Pads</h3><span class="muted tiny">⚙ = ajustes del pad</span></div>
     <div id="pads" class="pads"></div>
-    <label>Volumen de pads<input type="range" id="padVol" min="0" max="1.5" step="0.01" value="0.9" data-midi="padvol"></label>
-  </div>
-  <div id="padEdit" class="card hidden"></div>
-</section>
+    <div class="row"><button class="btn sm" id="padStop" title="Callar todos los pads">■ Parar</button><label class="inl" style="flex:1">Vol. pads<input type="range" id="padVol" min="0" max="1.5" step="0.01" value="0.9" data-midi="padvol"></label></div>
+    <div id="padEdit" class="hidden"></div>
+  </section>
 
-<section id="t-lib" class="tab">
-  <div class="chips" id="libChips">
-    <button data-sub="local" class="chip on">Mis canciones</button>
-    <button data-sub="yt" class="chip">YouTube</button>
-    <button data-sub="lists" class="chip">Listas</button>
-    <button data-sub="queue" class="chip">Cola <span id="qCount"></span></button>
-  </div>
-  <div class="sub" id="s-local">
-    <div class="card">
-      <div class="row wrap">
-        <label class="btn neon">＋ Canciones<input type="file" id="fileIn" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg" multiple hidden></label>
-        <label class="btn">📁 Carpeta<input type="file" id="dirIn" webkitdirectory multiple hidden></label>
-        <button class="btn" id="fsBtn" hidden>📂 Abrir carpeta (acceso)</button>
-      </div>
+  <section class="card" id="eqCard">
+    <div class="row between"><h3>EQ maestro</h3><select id="eqPreset"></select><label class="chk"><input type="checkbox" id="eqByp"> Bypass</label></div>
+    <canvas id="eqCv" height="70"></canvas>
+    <div id="eqBands" class="eqbands"></div>
+    <details><summary>Ajuste fino de banda y presets</summary>
+      <div id="eqEdit" class="eqedit"></div>
+      <div class="row wrap"><button class="btn sm" id="eqSave">Guardar preset</button><button class="btn sm" id="eqDel">Borrar preset</button><button class="btn sm" id="eqFlat">Plano</button></div>
+    </details>
+  </section>
+
+  <section class="card" id="recCard">
+    <div class="row between"><h3>Grabar mezcla</h3><span id="recInfo" class="muted small"></span></div>
+    <div class="row"><input id="recName" placeholder="Nombre del archivo"><select id="recFmt">
+      <option value="mp3-320">MP3 320</option><option value="mp3-192">MP3 192</option><option value="wav">WAV</option><option value="flac">FLAC</option><option value="wav+mp3">WAV + MP3</option><option value="all">WAV+FLAC+MP3</option></select></div>
+    <div class="row"><input id="recTags" placeholder="Etiquetas: cumbia, fiesta"><label class="chk small"><input type="checkbox" id="recComp"> + <span id="recCompFmt">WebM</span></label></div>
+    <button id="recBtn" class="btn rec big" data-midi="rec">● Grabar</button>
+    <div id="recList" class="list"></div>
+  </section>
+
+  <section class="card" id="libCard">
+    <div class="row between"><h3>Música del cel</h3><span id="storeInfo" class="muted tiny"></span></div>
+    <div class="row wrap">
+      <label class="btn neon">＋ Canciones / videos<input type="file" id="fileIn" accept="audio/*,video/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.mp4,.webm,.mov,.m4v,.mkv" multiple hidden></label>
+      <label class="btn">📁 Carpeta<input type="file" id="dirIn" webkitdirectory multiple hidden></label>
+      <button class="btn" id="fsBtn" hidden>📂 Acceso a carpeta</button>
+    </div>
+    <label class="chk small"><input type="checkbox" id="audioOnly"> Videos: guardar solo el audio (ahorra espacio)</label>
+    <div id="impMsg" class="muted small"></div>
+    <div class="chips" id="libChips">
+      <button data-sub="local" class="chip on">Canciones <span id="libCount"></span></button>
+      <button data-sub="lists" class="chip">Listas</button>
+      <button data-sub="queue" class="chip">Cola <span id="qCount"></span></button>
+    </div>
+    <div class="sub" id="s-local">
       <input id="q" class="search" placeholder="Buscar título, artista, BPM, tono…">
-      <div class="row between"><label class="chk"><input type="checkbox" id="harmOnly"> Solo compatibles con lo que suena</label><span id="anaMsg" class="muted tiny"></span></div>
+      <div class="row between"><label class="chk small"><input type="checkbox" id="harmOnly"> Solo compatibles con lo que suena</label><span id="anaMsg" class="muted tiny"></span></div>
+      <div id="libList" class="list scroll"></div>
     </div>
-    <div id="libList" class="list"></div>
-  </div>
-  <div class="sub hidden" id="s-yt">
-    <div class="card">
-      <div id="ytPlayer" class="ytwrap hidden"></div>
-      <div class="row"><input id="ytQ" class="search" placeholder="Buscar en YouTube o pega un link"><button class="btn neon" id="ytGo">Buscar</button></div>
-      <p class="muted tiny">YouTube suena en su propio reproductor: no pasa por el EQ, FX ni la grabación (lo bloquea YouTube). Spotify no permite reproducir fuera de su app; solo hay botón para abrirlo allá.</p>
-      <div id="ytMsg" class="muted small"></div>
+    <div class="sub hidden" id="s-lists">
+      <div class="row"><input id="plName" class="search" placeholder="Nombre de la lista"><button class="btn neon" id="plNew">Crear</button></div>
+      <div id="plList" class="list"></div>
     </div>
+    <div class="sub hidden" id="s-queue">
+      <div class="row between"><span class="muted small">El Auto‑mix toma de aquí. Si se vacía, elige una compatible.</span><button class="btn sm" id="qClear">Vaciar</button></div>
+      <div id="qList" class="list"></div>
+    </div>
+    <p class="muted tiny">El navegador no puede ver tu galería por su cuenta: eliges los archivos una vez y quedan guardados en la app.</p>
+  </section>
+</main>
+
+<!-- YouTube: ventana aparte dentro del sitio -->
+<div id="ytPanel" class="panel hidden">
+  <div class="panelhd"><b>YouTube</b><span class="badge warn">solo reproducir (sin EQ/FX/grabar)</span><button class="btn sm" id="ytClose">✕ Volver</button></div>
+  <div class="panelbody">
+    <div id="ytPlayer" class="ytwrap hidden"></div>
+    <div class="row"><input id="ytQ" class="search" placeholder="Buscar en YouTube o pega un link"><button class="btn neon" id="ytGo">Buscar</button></div>
+    <p class="muted tiny">YouTube: solo reproducir (sin EQ/FX/grabar). Su audio está encerrado en el reproductor de YouTube y no se puede procesar ni descargar desde aquí. Spotify solo se abre en su app.</p>
+    <div id="ytMsg" class="muted small"></div>
     <div id="ytList" class="list"></div>
   </div>
-  <div class="sub hidden" id="s-lists">
-    <div class="card"><div class="row"><input id="plName" class="search" placeholder="Nombre de la lista"><button class="btn neon" id="plNew">Crear</button></div></div>
-    <div id="plList" class="list"></div>
-  </div>
-  <div class="sub hidden" id="s-queue">
-    <div class="card row between"><span class="muted small">El Auto‑mix toma de aquí. Si se vacía, elige una compatible.</span><button class="btn" id="qClear">Vaciar</button></div>
-    <div id="qList" class="list"></div>
-  </div>
-</section>
+</div>
 
-<section id="t-eq" class="tab">
-  <div class="card">
-    <div class="row between"><h3>EQ maestro · 10 bandas</h3><label class="chk"><input type="checkbox" id="eqByp"> Bypass</label></div>
-    <canvas id="eqCv" height="120"></canvas>
-    <div id="eqBands" class="eqbands"></div>
-    <div id="eqEdit" class="eqedit"></div>
-    <div class="row wrap">
-      <select id="eqPreset"></select>
-      <button class="btn" id="eqSave">Guardar preset</button>
-      <button class="btn" id="eqDel">Borrar</button>
-      <button class="btn" id="eqFlat">Plano</button>
-    </div>
-  </div>
-</section>
-
-<section id="t-rec" class="tab">
-  <div class="card">
-    <h3>Grabar set</h3>
-    <label>Título<input id="recTitle" placeholder="Set en vivo"></label>
-    <label>Etiquetas<input id="recTags" placeholder="cumbia, fiesta, en vivo"></label>
-    <label>Formato<select id="recFmt"><option value="wav">WAV (sin pérdida)</option><option value="flac">FLAC (sin pérdida, más ligero)</option><option value="both">WAV + FLAC</option></select></label>
-    <button id="recBtn" class="btn rec big" data-midi="rec">● Grabar</button>
-    <div id="recInfo" class="muted small center"></div>
-    <p class="muted tiny">Graba la salida maestra tal cual (decks, pads, FX y micro) a la calidad de tu teléfono. Metadatos: título, usuario, fecha y etiquetas. Aguanta bien ~60 min por la memoria del cel.</p>
-  </div>
-  <div id="recList" class="list"></div>
-</section>
-
-<section id="t-more" class="tab">
+<!-- Menú: micro, MIDI, bitácora, PIN, permisos, ajustes -->
+<div id="menuPanel" class="panel hidden">
+  <div class="panelhd"><b>Menú</b><button class="btn sm" id="menuClose">✕ Volver</button></div>
+  <div class="panelbody">
   <details class="card" open><summary>🎤 Micrófono</summary>
     <div class="row between"><button class="btn neon" id="micBtn" data-midi="mic">Prender micro</button><label class="chk"><input type="checkbox" id="duck" checked> Bajar música al hablar</label></div>
     <label>Volumen<input type="range" id="micGain" min="0" max="2" step="0.01" value="1"></label>
@@ -142,7 +141,7 @@
     <div id="midiDev" class="muted small">Sin controlador</div>
     <div id="midiMon" class="mono small">—</div>
     <div id="midiMap" class="mono tiny"></div>
-    <p class="muted tiny">Conecta tu controlador por USB‑OTG y usa Chrome. Pads: notas 36‑43 se mapean solas. Para lo demás: "Aprender control", toca el botón o slider de la app y mueve la perilla del controlador.</p>
+    <p class="muted tiny">Conecta tu controlador por USB‑OTG y usa Chrome. Pads: notas 36‑43 se mapean solas. Para lo demás: "Aprender control", cierra el menú, toca el control y mueve la perilla.</p>
   </details>
   <details class="card"><summary>📋 Bitácora de auditoría</summary>
     <div class="row wrap"><button class="btn" id="logCsv">Exportar CSV</button><button class="btn" id="logJson">Exportar JSON</button><button class="btn" id="logClr">Borrar</button></div>
@@ -156,7 +155,7 @@
   </details>
   <details class="card"><summary>🛡️ Permisos y licencias</summary>
     <div id="perms" class="perms"></div>
-    <p class="muted tiny">Sonidos de pads integrados y pistas demo: generados por la app (autoría propia, CC0). Al cargar un WAV/FLAC propio en un pad se revisan sus metadatos buscando CC0; si no aparece, se marca "licencia sin verificar".</p>
+    <p class="muted tiny">Pads: aplausos, risas, ovación, "oooh" y "hey" son grabaciones reales CC0 de Freesound (ver <a href="assets/pads/CREDITOS.md" target="_blank">créditos</a>); el resto y las pistas demo los genera la app (autoría propia, CC0). Al cargar un WAV/FLAC propio en un pad se revisan sus metadatos buscando CC0; si no aparece, se marca "licencia sin verificar". MP3 con LAME (lamejs, LGPL).</p>
   </details>
   <details class="card"><summary>⚙️ Ajustes</summary>
     <label>Llave YouTube Data API (opcional, gratis)<input id="ytKey" type="password" placeholder="Solo si el buscador gratis falla"></label>
@@ -167,18 +166,11 @@
     <div class="row wrap"><button class="btn" id="cacheClr">Limpiar caché de búsqueda</button><button class="btn" id="demoBtn">Recrear pistas demo</button></div>
     <p id="ver" class="muted tiny"></p>
   </details>
-</section>
-</main>
+  </div>
+</div>
 
+<div id="sheet" class="sheet hidden"><div class="sheetbox"><b id="sheetTitle"></b><div id="sheetBtns"></div><button class="btn" id="sheetX">Cancelar</button></div></div>
 <div id="toast"></div>
-<nav id="nav">
-  <button data-tab="mix" class="on">🎚️<span>Mezcla</span></button>
-  <button data-tab="pads">🥁<span>Pads</span></button>
-  <button data-tab="lib">🎵<span>Música</span></button>
-  <button data-tab="eq">📊<span>EQ</span></button>
-  <button data-tab="rec">⏺️<span>Grabar</span></button>
-  <button data-tab="more">☰<span>Más</span></button>
-</nav>
-<script type="module" src="js/app.js?v=2"></script>
+<script type="module" src="js/app.js?v=4"></script>
 </body>
 </html>

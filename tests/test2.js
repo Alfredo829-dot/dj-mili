@@ -49,6 +49,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await stopAll();
   // ---- 3) Mic solo a ganancia alta (pasa por el limitador) ----
   if (micOk === true) { await p.evaluate(async () => { await window.__djm.eng.micOn({ gain: 2, echo: 0.9 }); window.__djm.eng.micSet({ gain: 2 }); }); await rec('mic_only', 3000); await p.evaluate(() => window.__djm.eng.micOff()); }
+  await p.evaluate(() => window.__djm.sampler.stopAll()); await sleep(300);
   // ---- 4) Clics: tono 440 con hot cues, loops, pausa, crossfader, pads ----
   const tone = await id('Tono 440');
   await p.evaluate(async t => { await window.__djm.api.loadToDeck(0, t); await window.__djm.api.loadToDeck(1, t); }, tone);

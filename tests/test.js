@@ -58,7 +58,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await p.evaluate(() => { window.__djm.api.applyPreset('b:Cumbia'); window.__djm.api.showTab('eq'); });
   await sleep(300); await p.screenshot({ path: SH + '05-eq.png', fullPage: true });
   // Recording
-  await p.evaluate(() => { window.__djm.api.showTab('rec'); document.querySelector('#recTitle').value = 'Prueba Set'; document.querySelector('#recTags').value = 'prueba, cumbia'; document.querySelector('#recFmt').value = 'both'; });
+  await p.evaluate(() => { window.__djm.api.showTab('rec'); document.querySelector('#recName').value = 'Prueba Set'; document.querySelector('#recName').dispatchEvent(new Event('input')); document.querySelector('#recTags').value = 'prueba, cumbia'; document.querySelector('#recFmt').value = 'all'; });
   await p.click('#recBtn');
   await p.evaluate(() => { window.__djm.eng.decks[0].play(); window.__djm.api.firePad(0); });
   await sleep(3000); await p.screenshot({ path: SH + '06-grabando.png' });
@@ -84,22 +84,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   R.padFlac = await p.evaluate(() => ({ name: window.__djm.sampler.pads[7].name, lic: window.__djm.sampler.pads[7].license, msg: document.querySelector('#peLic').textContent }));
   // Library + YouTube
   await p.evaluate(() => window.__djm.api.showTab('lib')); await sleep(300); await p.screenshot({ path: SH + '09-musica.png' });
-  await p.evaluate(() => { document.querySelector('[data-sub=yt]').click(); document.querySelector('#ytQ').value = 'cumbia sonidera'; document.querySelector('#ytGo').click(); });
+  await p.evaluate(() => { document.querySelector('#ytBtn').click(); document.querySelector('#ytQ').value = 'cumbia sonidera'; document.querySelector('#ytGo').click(); });
   try { await p.waitForFunction(() => /resultados|respondió/.test(document.querySelector('#ytMsg').textContent), { timeout: 30000 }); } catch (e) {}
   R.yt = await p.evaluate(() => document.querySelector('#ytMsg').textContent + ' | ' + document.querySelectorAll('#ytList .it').length);
   await sleep(1500); await p.screenshot({ path: SH + '10-youtube.png' });
   // cache hit
   await p.evaluate(() => document.querySelector('#ytGo').click()); await sleep(800);
   R.ytCache = await p.evaluate(() => document.querySelector('#ytMsg').textContent);
+  await p.evaluate(() => document.querySelector('#ytClose').click()); await sleep(300);
   // More tab + log
-  await p.evaluate(() => { window.__djm.api.showTab('more'); document.querySelectorAll('#t-more details').forEach(d => d.open = true); });
+  await p.evaluate(() => { window.__djm.api.showTab('more'); document.querySelectorAll('#menuPanel details').forEach(d => d.open = true); });
   await sleep(600); await p.screenshot({ path: SH + '11-mas-bitacora.png', fullPage: true });
+  await p.evaluate(() => document.querySelector('#menuClose').click()); await sleep(200);
   R.audit = await p.evaluate(async () => { const m = await import('./js/store.js'); const a = await m.auditAll(); return { n: a.length, sample: a.slice(-3) }; });
   // mic
   R.mic = await p.evaluate(async () => { try { await window.__djm.eng.micOn(); const ok = !!window.__djm.eng.mic; window.__djm.eng.micOff(); return ok; } catch (e) { return 'err ' + e.message; } });
   // party
   await p.evaluate(() => { window.__djm.eng.decks[1].play(); document.querySelector('#partyBtn').click(); }); await sleep(1500);
   await p.screenshot({ path: SH + '12-fiesta.png' });
+  await p.evaluate(() => { document.querySelector('#partyX').click(); window.scrollTo(0, 0); }); await sleep(600);
+  await p.screenshot({ path: SH + '14-pantalla-unica.png', fullPage: true }); await p.screenshot({ path: SH + '15-pantalla-unica-arriba.png' });
+  await p.evaluate(() => document.querySelector('#partyBtn').click()); await sleep(300);
   await p.evaluate(() => document.querySelector('#partyX').click());
   // FX brake / filter / scratch sanity
   R.fx = await p.evaluate(async () => { const d = window.__djm.eng.decks[1]; d.setFilter(-0.6); d.setFX('echo', 0.5); d.scratch(); await new Promise(r => setTimeout(r, 700)); d.setFX('flanger', 0.5); d.brake(0.5); await new Promise(r => setTimeout(r, 700)); return { stoppedAfterBrake: !d.playing, filter: d.filter.type }; });
